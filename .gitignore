@@ -1,0 +1,54 @@
+# ── Secrets — NEVER commit these ─────────────────────────────
+.env
+*.env
+.env.*
+!.env.example
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# ── Virtual environments ──────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Testing ───────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ── Type checking / linting ───────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# ── Runtime output ────────────────────────────────────────────
+report.txt
+reports/
+*.log
+
+# ── Editors ───────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Vagrant ───────────────────────────────────────────────────
+.vagrant/
+
+# ── Docker ────────────────────────────────────────────────────
+# (docker-compose.yml and Dockerfile are intentionally committed)

@@ -1,0 +1,164 @@
+version: "3.9"
+
+# ── Aegis — full stack ──────────────────────────────────────────────────
+#
+#  Services:
+#    aegis      FastAPI app  →  http://localhost:8000
+#    opensearch       OpenSearch (Apache 2.0 search/analytics backend)
+#    dashboards       OpenSearch Dashboards  →  http://localhost:5601
+#
+#  Quick start:
+#    1. cp .env.example .env  &&  vim .env   (add your OPENAI_API_KEY)
+#    2. docker compose up -d
+#    3. docker compose logs -f aegis
+#    4. curl http://localhost:8000/
+#
+#  First-time dashboard setup (run once after services are healthy):
+#    docker compose exec aegis python -m modules.analytics.kibana_setup
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Application ─────────────────────────────────────────────────────────────
+  aegis:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: aegis:latest
+    container_name: aegis
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+
+    # Inject config from .env — secrets never baked into the image
+    env_file:
+      - .env
+
+    # Override specific values for the containerised environment
+    environment:
+      # Point at the compose-internal OpenSearch service, not localhost
+      ELASTICSEARCH_URL: http://opensearch:9200
+      ELASTICSEARCH_ENABLED: "true"
+      DASHBOARD_URL: http://dashboards:5601
+
+    # ── Capabilities ──────────────────────────────────────────────────────────
+    # NET_ADMIN + SYS_PTRACE are required for the network remediation agent
+    # (iptables DROP rules, isolate_host). Remove these caps in environments
+    # where live remediation is disabled (DRY_RUN=true).
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+    # Prevent privilege escalation beyond the declared caps
+    security_opt:
+      - no-new-privileges:true
+
+    # Restrict filesystem writes to the reports volume only
+    read_only: false
+    tmpfs:
+      - /tmp
+
+    volumes:
+      - reports:/app/reports
+
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+    networks:
+      - chainsage-net
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+
+  # ── OpenSearch (Apache 2.0) ──────────────────────────────────────────────────
+  opensearch:
+    image: opensearchproject/opensearch:2.13.0
+    container_name: opensearch
+    restart: unless-stopped
+
+    environment:
+      - cluster.name=aegis-cluster
+      - node.name=opensearch-node1
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      # Disable security plugin for local dev — enable in production
+      - DISABLE_SECURITY_PLUGIN=true
+
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+
+    networks:
+      - chainsage-net
+
+    healthcheck:
+      test: ["CMD-SHELL",
+             "curl -sf http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+
+  # ── OpenSearch Dashboards (Apache 2.0) ──────────────────────────────────────
+  dashboards:
+    image: opensearchproject/opensearch-dashboards:2.13.0
+    container_name: opensearch-dashboards
+    restart: unless-stopped
+
+    environment:
+      - OPENSEARCH_HOSTS=["http://opensearch:9200"]
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+
+    ports:
+      - "5601:5601"
+
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+    networks:
+      - chainsage-net
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5601/api/status | grep -q '\"state\":\"green\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  opensearch-data:
+    driver: local
+  reports:
+    driver: local
+
+
+# ── Networks ──────────────────────────────────────────────────────────────────
+networks:
+  chainsage-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

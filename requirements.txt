@@ -1,0 +1,31 @@
+# Core API
+fastapi
+uvicorn[standard]
+python-dotenv
+
+# Auth
+python-jose[cryptography]
+requests
+
+# Cloud SDKs
+boto3
+
+# Azure (install if using Azure)
+# azure-identity
+# azure-mgmt-network
+# azure-mgmt-storage
+
+# GCP (install if using GCP)
+# google-cloud-compute
+
+# AI — OpenAI SDK (also works with Ollama, vLLM, LM Studio, LocalAI, Groq, etc.)
+openai
+
+# Search / Analytics backend — pick one (or both; opensearch-py is tried first)
+#   OpenSearch (recommended — Apache 2.0, fully open source):
+opensearch-py
+#   Elasticsearch (Elastic License 2.0 / SSPL — fallback if opensearch-py is absent):
+# elasticsearch>=8.0.0
+
+# Network scanning (requires nmap binary: apt install nmap / brew install nmap)
+# python-nmap
