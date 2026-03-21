@@ -1,5 +1,5 @@
 """
-Aegis — FastAPI web service  (v2.5.0)
+Aegis — FastAPI web service  (v2.6.0)
 
 Endpoints:
   GET  /                   → health check (public)
@@ -15,6 +15,8 @@ Endpoints:
   GET  /api/acas/findings  → paginated ACAS findings (ANALYST+)
   POST /api/acas/scan      → trigger on-demand ACAS pull from Tenable.sc/Nessus (ADMIN+)
   GET  /api/audit          → tail the immutable audit log (OWNER only)
+
+v2.6.0 — Version alignment with TokenDNA Attribution Dashboard release.
 
 v2.5.0 — Active Defense + ACAS Integration:
   - ACAS/Nessus scanner integration (Tenable.sc API, Nessus API, .nessus XML).
@@ -86,7 +88,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Aegis",
     description="Autonomous multi-cloud & network security posture management",
-    version="2.5.0",
+    version="2.6.0",
     # Suppress /openapi.json and /docs in non-dev environments (reduces attack surface)
     docs_url="/docs" if DEV_MODE else None,
     redoc_url="/redoc" if DEV_MODE else None,
@@ -144,7 +146,7 @@ async def startup_checks():
         )
 
     mode = "DRY RUN" if DRY_RUN else "LIVE REMEDIATION"
-    logger.info(f"Aegis v2.5.0 starting in {mode} mode.")
+    logger.info(f"Aegis v2.6.0 starting in {mode} mode.")
 
     acas_mode = os.getenv("ACAS_MODE", "xml")
     logger.info("ACAS scanner mode: %s (RA-5 / SI-2)", acas_mode)
@@ -164,7 +166,7 @@ async def startup_checks():
         AuditEventType.STARTUP,
         AuditOutcome.SUCCESS,
         detail={
-            "version": "2.5.0",
+            "version": "2.6.0",
             "dev_mode": DEV_MODE,
             "dry_run": DRY_RUN,
             "auto_remediate": AUTO_REMEDIATE,
