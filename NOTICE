@@ -1,0 +1,35 @@
+Aegis — Cloud-Agnostic Security Posture Management Platform
+Copyright (c) 2024 Ryan Wallace. All rights reserved.
+
+This product is licensed under the Business Source License 1.1.
+See the LICENSE file for full terms.
+
+For commercial licensing inquiries: ryanwallac33@gmail.com
+
+-------------------------------------------------------------------------------
+Third-Party Components
+-------------------------------------------------------------------------------
+
+This software incorporates the following open-source components:
+
+FastAPI (MIT License)
+  https://github.com/tiangolo/fastapi
+
+OpenSearch Python Client (Apache 2.0)
+  https://github.com/opensearch-project/opensearch-py
+
+python-nmap (GPL v3)
+  https://pypi.org/project/python-nmap/
+  Note: GPL component — used at runtime only, not linked into the core library.
+
+python-jose (MIT License)
+  https://github.com/mpdavis/python-jose
+
+openai (MIT License)
+  https://github.com/openai/openai-python
+
+boto3 (Apache 2.0)
+  https://github.com/boto/boto3
+
+Docker base image: python:3.11-slim (Debian, various licenses)
+OpenSearch 2.x: Apache License 2.0
