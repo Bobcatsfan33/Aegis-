@@ -16,6 +16,13 @@ Endpoints:
   POST /api/acas/scan      → trigger on-demand ACAS pull from Tenable.sc/Nessus (ADMIN+)
   GET  /api/audit          → tail the immutable audit log (OWNER only)
 
+v2.8.0 — Encryption at Rest:
+  - AES-256-GCM field-level envelope encryption for findings store (ClickHouse/SQLite).
+  - Key providers: AWS KMS, Azure Key Vault, HashiCorp Vault, env var (dev only).
+  - POST /api/encryption/rotate — re-encrypt specified columns under new DEK.
+  - GET /api/encryption/status — provider health and configuration status.
+  - NIST SC-28, SC-28(1), SC-12, SC-12(1) coverage.
+
 v2.7.0 — mTLS Service Mesh:
   - MTLSMiddleware: proxy mode (Nginx/Envoy) and native mode (Uvicorn TLS).
   - Inbound API plane: client cert enforcement for operator tooling and SIEM agents.
@@ -95,6 +102,12 @@ from modules.transport.mtls import (
     check_mtls_config as _check_mtls_config,
     OutboundMTLSSession,
 )
+from modules.security.encryption import (
+    check_encryption_config as _check_enc_config,
+    encrypt_field,
+    decrypt_field,
+    KeyRotator,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +116,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Aegis",
     description="Autonomous multi-cloud & network security posture management",
-    version="2.7.0",
+    version="2.8.0",
     # Suppress /openapi.json and /docs in non-dev environments (reduces attack surface)
     docs_url="/docs" if DEV_MODE else None,
     redoc_url="/redoc" if DEV_MODE else None,
@@ -167,7 +180,7 @@ async def startup_checks():
         )
 
     mode = "DRY RUN" if DRY_RUN else "LIVE REMEDIATION"
-    logger.info(f"Aegis v2.7.0 starting in {mode} mode.")
+    logger.info(f"Aegis v2.8.0 starting in {mode} mode.")
 
     acas_mode = os.getenv("ACAS_MODE", "xml")
     logger.info("ACAS scanner mode: %s (RA-5 / SI-2)", acas_mode)
@@ -196,12 +209,19 @@ async def startup_checks():
                 "Check ELASTICSEARCH_URL and credentials."
             )
 
+    # v2.8: Encryption at rest configuration check (SC-28)
+    enc_summary: dict = {}
+    try:
+        enc_summary = _check_enc_config()
+    except Exception as exc:
+        logger.error("Aegis encryption at rest config error: %s", exc)
+
     # AU-2 / AU-12: emit auditable startup event
     log_event(
         AuditEventType.STARTUP,
         AuditOutcome.SUCCESS,
         detail={
-            "version": "2.7.0",
+            "version": "2.8.0",
             "dev_mode": DEV_MODE,
             "dry_run": DRY_RUN,
             "auto_remediate": AUTO_REMEDIATE,
@@ -211,6 +231,8 @@ async def startup_checks():
             "mtls_mode": mtls_mode or "disabled",
             "mtls_inbound_certs": mtls_summary.get("inbound_certs_present", False),
             "mtls_outbound_certs": mtls_summary.get("outbound_certs_present", False),
+            "enc_provider": enc_summary.get("provider", "unknown"),
+            "enc_provider_ready": enc_summary.get("provider_ready", False),
         },
     )
 
@@ -402,7 +424,7 @@ def root():
     fips_info = _fips.compliance_summary()
     return {
         "service":        "Aegis",
-        "version":        "2.7.0",
+        "version":        "2.8.0",
         "status":         "running",
         "mode":           "dry_run" if DRY_RUN else "live",
         "auto_remediate": AUTO_REMEDIATE,
@@ -410,6 +432,7 @@ def root():
         "il_environment": fips_info.get("environment", "unknown"),
         "mtls_enabled":   os.getenv("MTLS_MODE", "").lower() in ("proxy", "native"),
         "mtls_mode":      os.getenv("MTLS_MODE", "disabled"),
+        "enc_provider":   os.getenv("ENC_PROVIDER", "env"),
     }
 
 
@@ -902,4 +925,100 @@ async def acas_trigger_scan(
         "status":  "queued",
         "message": "ACAS scan started. Poll GET /api/acas for results.",
         "actor":   actor,
+    }
+
+
+# ── Encryption at rest (v2.8.0) ───────────────────────────────────────────────
+# SC-28 (Protection of Information at Rest), SC-28(1) (Cryptographic Protection)
+
+@app.get("/api/encryption/status")
+async def encryption_status(
+    caller: dict = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Return encryption-at-rest provider status and configuration.
+    Reports provider type, key ID metadata (never key material), and readiness.
+
+    NIST SC-28(1) — ADMIN+ only.
+    """
+    from modules.security.encryption import ENC_PROVIDER, ENC_KMS_KEY_ID, ENC_VAULT_KEY
+    from modules.security.encryption import _get_provider
+    provider_ready = False
+    provider_name  = "unknown"
+    try:
+        p = _get_provider()
+        provider_name  = p.provider_name()
+        provider_ready = True
+    except Exception as exc:
+        provider_name = f"ERROR: {exc}"
+
+    log_event(
+        AuditEventType.ACCESS,
+        AuditOutcome.SUCCESS,
+        detail={"resource": "/api/encryption/status", "provider": ENC_PROVIDER},
+    )
+    return {
+        "provider":       ENC_PROVIDER,
+        "provider_name":  provider_name,
+        "provider_ready": provider_ready,
+        "kms_key_set":    bool(ENC_KMS_KEY_ID),
+        "vault_key":      ENC_VAULT_KEY,
+        "master_key_set": bool(os.getenv("ENC_MASTER_KEY")),
+        "nist":           ["SC-28", "SC-28(1)", "SC-12", "SC-12(1)"],
+    }
+
+
+@app.post("/api/encryption/rotate")
+async def rotate_encryption_keys(
+    request: "Any",
+    background_tasks: BackgroundTasks,
+    caller: dict = Depends(require_role(Role.OWNER)),
+):
+    """
+    Trigger key rotation for encrypted columns in a ClickHouse table.
+
+    Re-encrypts each blob: decrypt → plaintext → fresh DEK under current KEK.
+    Runs as a background task; non-blocking response.
+
+    Body (JSON):
+      { "table": "findings", "columns": ["host", "plugin_output"], "batch_size": 500 }
+
+    OWNER only — audit-logged. NIST SC-28(1), SC-12.
+    """
+    import re as _re
+    body: dict = await request.json()
+    table    = body.get("table", "")
+    columns  = body.get("columns", [])
+    batch_sz = int(body.get("batch_size", 500))
+
+    if not table or not columns:
+        raise HTTPException(status_code=422, detail="'table' and 'columns' are required")
+
+    for col in columns:
+        if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$", col):
+            raise HTTPException(status_code=422, detail=f"Invalid column name: {col!r}")
+    if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]{0,127}$", table):
+        raise HTTPException(status_code=422, detail=f"Invalid table name: {table!r}")
+
+    log_event(
+        AuditEventType.CONFIG_CHANGE,
+        AuditOutcome.SUCCESS,
+        detail={"action": "enc_rotation_started", "table": table, "columns": columns},
+    )
+
+    def _do_rotate() -> None:
+        try:
+            result = KeyRotator().rotate_clickhouse(table=table, columns=columns, batch_size=batch_sz)
+            logger.info("Aegis key rotation complete: table=%s result=%s", table, result)
+        except Exception as exc:
+            logger.error("Aegis key rotation failed: table=%s error=%s", table, exc)
+
+    import threading
+    threading.Thread(target=_do_rotate, daemon=True, name="aegis-key-rotator").start()
+
+    return {
+        "status":  "rotation_started",
+        "table":   table,
+        "columns": columns,
+        "message": "Rotation running in background. Check logs for completion.",
     }
