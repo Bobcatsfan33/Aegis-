@@ -16,6 +16,16 @@ Endpoints:
   POST /api/acas/scan      → trigger on-demand ACAS pull from Tenable.sc/Nessus (ADMIN+)
   GET  /api/audit          → tail the immutable audit log (OWNER only)
 
+v2.7.0 — mTLS Service Mesh:
+  - MTLSMiddleware: proxy mode (Nginx/Envoy) and native mode (Uvicorn TLS).
+  - Inbound API plane: client cert enforcement for operator tooling and SIEM agents.
+  - Outbound scanner plane: OutboundMTLSSession / AsyncOutboundMTLSSession
+    for Tenable.sc, DoD SIEM, and eMASS REST API mTLS connections.
+  - FIPS-approved cipher suite (TLS 1.2+, ECDHE-AES-GCM).
+  - CN allowlist (MTLS_ALLOWED_CNS) with SAN fallback.
+  - AEGIS_CLIENT_CERT / AEGIS_CLIENT_KEY for scanner outbound identity.
+  - NIST SC-8, SC-8(1), IA-3, SC-17, MA-3, RA-5, SI-7 coverage.
+
 v2.6.0 — Version alignment with TokenDNA Attribution Dashboard release.
 
 v2.5.0 — Active Defense + ACAS Integration:
@@ -80,6 +90,11 @@ from modules.security.audit_log import AuditEventType, AuditOutcome, log_event
 from modules.security.fips import fips as _fips
 from modules.security.headers import RequestValidationMiddleware, SecurityHeadersMiddleware
 from modules.security.rbac import Role, require_role
+from modules.transport.mtls import (
+    MTLSMiddleware as _MTLSMiddleware,
+    check_mtls_config as _check_mtls_config,
+    OutboundMTLSSession,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +103,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Aegis",
     description="Autonomous multi-cloud & network security posture management",
-    version="2.6.0",
+    version="2.7.0",
     # Suppress /openapi.json and /docs in non-dev environments (reduces attack surface)
     docs_url="/docs" if DEV_MODE else None,
     redoc_url="/redoc" if DEV_MODE else None,
@@ -97,10 +112,15 @@ app = FastAPI(
 # ── STIG checker singleton ─────────────────────────────────────────────────────
 _stig_checker = STIGChecker()
 
-# ── Middleware stack (order matters: outermost = last added) ───────────────────
+# ── Middleware stack (order matters: outermost = last added, executes first) ───
+# Execution order: CORS → mTLS → RequestValidation → SecurityHeaders → routes
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestValidationMiddleware)
+# SC-8 / IA-3: mTLS inbound API enforcement (operator tooling + SIEM push agents)
+if os.getenv("MTLS_MODE", "").lower() in ("proxy", "native"):
+    app.add_middleware(_MTLSMiddleware)
+    logger.info("Aegis mTLS middleware ENABLED (mode=%s)", os.getenv("MTLS_MODE"))
 
 _cors_origins: list[str] = [
     o.strip()
@@ -111,7 +131,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_methods=["GET", "POST"],
-    allow_headers=["Authorization", "X-API-Key", "X-Correlation-ID", "Content-Type"],
+    allow_headers=["Authorization", "X-API-Key", "X-Correlation-ID", "Content-Type",
+                   "X-Client-Cert", "X-Forwarded-Client-Cert"],
     allow_credentials=False,
 )
 
@@ -146,10 +167,24 @@ async def startup_checks():
         )
 
     mode = "DRY RUN" if DRY_RUN else "LIVE REMEDIATION"
-    logger.info(f"Aegis v2.6.0 starting in {mode} mode.")
+    logger.info(f"Aegis v2.7.0 starting in {mode} mode.")
 
     acas_mode = os.getenv("ACAS_MODE", "xml")
     logger.info("ACAS scanner mode: %s (RA-5 / SI-2)", acas_mode)
+
+    # v2.7: mTLS config validation (SC-8, IA-3)
+    mtls_mode = os.getenv("MTLS_MODE", "").lower()
+    mtls_summary: dict = {}
+    if mtls_mode in ("proxy", "native"):
+        try:
+            mtls_summary = _check_mtls_config()
+        except Exception as exc:
+            logger.error("Aegis mTLS config error: %s", exc)
+    else:
+        logger.warning(
+            "Aegis mTLS: NOT ENABLED (MTLS_MODE not set). "
+            "Set MTLS_MODE=proxy|native for IL4/IL5 inter-service transport (SC-8)."
+        )
 
     if ELASTICSEARCH_ENABLED:
         if _indexer.is_available():
@@ -166,13 +201,16 @@ async def startup_checks():
         AuditEventType.STARTUP,
         AuditOutcome.SUCCESS,
         detail={
-            "version": "2.6.0",
+            "version": "2.7.0",
             "dev_mode": DEV_MODE,
             "dry_run": DRY_RUN,
             "auto_remediate": AUTO_REMEDIATE,
             "fips_active": fips_summary.get("fips_active", False),
             "fips_environment": fips_summary.get("environment", "unknown"),
             "acas_mode": os.getenv("ACAS_MODE", "xml"),
+            "mtls_mode": mtls_mode or "disabled",
+            "mtls_inbound_certs": mtls_summary.get("inbound_certs_present", False),
+            "mtls_outbound_certs": mtls_summary.get("outbound_certs_present", False),
         },
     )
 
@@ -364,12 +402,14 @@ def root():
     fips_info = _fips.compliance_summary()
     return {
         "service":        "Aegis",
-        "version":        "2.4.0",
+        "version":        "2.7.0",
         "status":         "running",
         "mode":           "dry_run" if DRY_RUN else "live",
         "auto_remediate": AUTO_REMEDIATE,
         "fips_active":    fips_info.get("fips_active", False),
         "il_environment": fips_info.get("environment", "unknown"),
+        "mtls_enabled":   os.getenv("MTLS_MODE", "").lower() in ("proxy", "native"),
+        "mtls_mode":      os.getenv("MTLS_MODE", "disabled"),
     }
 
 
