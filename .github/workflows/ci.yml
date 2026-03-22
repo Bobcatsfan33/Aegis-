@@ -37,11 +37,20 @@ jobs:
           import importlib, sys
           mods = [
             'config', 'auth',
-            'modules.tenants.models', 'modules.tenants.store', 'modules.tenants.middleware',
-            'modules.identity.cache_redis', 'modules.identity.ml_model',
-            'modules.identity.session_graph', 'modules.identity.async_pipeline',
-            'modules.security.audit_log', 'modules.security.rbac', 'modules.security.headers',
-            'onboarding.aws_connector',
+            'modules.agents.orchestrator',
+            'modules.analytics.elastic',
+            'modules.compliance.stig',
+            'modules.compliance.ssp_generator',
+            'modules.compliance.conmon',
+            'modules.reports.compliance',
+            'modules.scanners.base',
+            'modules.scanners.acas.scanner',
+            'modules.security.audit_log',
+            'modules.security.rbac',
+            'modules.security.headers',
+            'modules.security.fips',
+            'modules.security.encryption',
+            'modules.transport.mtls',
           ]
           failed = []
           for m in mods:

@@ -1,0 +1,20 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 200
+
+[tool.ruff.lint]
+# F401 unused-import      — many imports are re-exports or guarded by try/except
+# F841 unused-variable    — common pattern in exception handlers and scan loops
+# E402 module-import-not-at-top — intentional lazy imports (heavy optional deps)
+# E701 multiple-stmts-colon — compact guard clauses in scanner hot-paths
+# F541 f-string-no-placeholders — leftover from template expansions
+# F811 redefinition-of-unused — intentional re-exports and conditional definitions
+ignore = ["F401", "F841", "E402", "E701", "F541", "F811"]
+
+# Keep these active — real correctness / security issues:
+# F821 undefined-name
+# F811 already excluded above
+# E711 / E712 comparison to None/True/False
+# W291 trailing whitespace
+select = ["F", "E", "W"]
+# Re-ignore E701/E402 via the ignore list above; F821 stays active
