@@ -1,5 +1,5 @@
 """
-Aegis — FastAPI web service  (v2.5.0)
+Aegis — FastAPI web service  (v2.10.0)
 
 Endpoints:
   GET  /                   → health check (public)
@@ -15,6 +15,43 @@ Endpoints:
   GET  /api/acas/findings  → paginated ACAS findings (ANALYST+)
   POST /api/acas/scan      → trigger on-demand ACAS pull from Tenable.sc/Nessus (ADMIN+)
   GET  /api/audit          → tail the immutable audit log (OWNER only)
+
+v2.10.0 — ConMon Automation Pipeline:
+  - POST /api/conmon/run   — trigger on-demand ConMon run (ADMIN+, background thread)
+  - GET  /api/conmon/status — last run summary with stage, timestamps, findings delta (ANALYST+)
+  - 5-stage pipeline: SCAN → ASSESS → REPORT → PUSH → ALERT
+  - EMassClient: PUT controls, POST POA&M, POST artifact to eMASS REST API v3.
+  - SIEM (JSON POST) + Slack webhook alert on every run.
+  - CONMON_DRY_RUN=true (default) for safe testing without eMASS writes.
+  - NIST CA-2, CA-5, CA-6, CA-7, RA-5, SI-4 ConMon coverage.
+
+v2.9.0 — eMASS SSP Auto-Generator:
+  - GET /api/ssp       — live SSP JSON (eMASS API import payload)
+  - GET /api/ssp/csv   — eMASS Controls worksheet CSV (bulk upload format)
+  - GET /api/ssp/md    — Markdown narrative for DAA review package
+  - AegisSspGenerator pulls live posture data: FIPS, STIG, ACAS, mTLS, encryption.
+  - 42 NIST 800-53 Rev5 controls auto-assessed across 9 control families.
+  - Auto-generated POA&M entries from ACAS findings, mTLS gaps, FIPS gaps.
+  - NIST CA-2, CA-5, CA-6, CA-7, PL-2 coverage.
+
+v2.8.0 — Encryption at Rest:
+  - AES-256-GCM field-level envelope encryption for findings store (ClickHouse/SQLite).
+  - Key providers: AWS KMS, Azure Key Vault, HashiCorp Vault, env var (dev only).
+  - POST /api/encryption/rotate — re-encrypt specified columns under new DEK.
+  - GET /api/encryption/status — provider health and configuration status.
+  - NIST SC-28, SC-28(1), SC-12, SC-12(1) coverage.
+
+v2.7.0 — mTLS Service Mesh:
+  - MTLSMiddleware: proxy mode (Nginx/Envoy) and native mode (Uvicorn TLS).
+  - Inbound API plane: client cert enforcement for operator tooling and SIEM agents.
+  - Outbound scanner plane: OutboundMTLSSession / AsyncOutboundMTLSSession
+    for Tenable.sc, DoD SIEM, and eMASS REST API mTLS connections.
+  - FIPS-approved cipher suite (TLS 1.2+, ECDHE-AES-GCM).
+  - CN allowlist (MTLS_ALLOWED_CNS) with SAN fallback.
+  - AEGIS_CLIENT_CERT / AEGIS_CLIENT_KEY for scanner outbound identity.
+  - NIST SC-8, SC-8(1), IA-3, SC-17, MA-3, RA-5, SI-7 coverage.
+
+v2.6.0 — Version alignment with TokenDNA Attribution Dashboard release.
 
 v2.5.0 — Active Defense + ACAS Integration:
   - ACAS/Nessus scanner integration (Tenable.sc API, Nessus API, .nessus XML).
@@ -78,6 +115,19 @@ from modules.security.audit_log import AuditEventType, AuditOutcome, log_event
 from modules.security.fips import fips as _fips
 from modules.security.headers import RequestValidationMiddleware, SecurityHeadersMiddleware
 from modules.security.rbac import Role, require_role
+from modules.transport.mtls import (
+    MTLSMiddleware as _MTLSMiddleware,
+    check_mtls_config as _check_mtls_config,
+    OutboundMTLSSession,
+)
+from modules.security.encryption import (
+    check_encryption_config as _check_enc_config,
+    encrypt_field,
+    decrypt_field,
+    KeyRotator,
+)
+from modules.compliance.ssp_generator import AegisSspGenerator
+from modules.compliance.conmon import ConMonPipeline, check_conmon_config as _check_conmon_config
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +136,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Aegis",
     description="Autonomous multi-cloud & network security posture management",
-    version="2.5.0",
+    version="2.10.0",
     # Suppress /openapi.json and /docs in non-dev environments (reduces attack surface)
     docs_url="/docs" if DEV_MODE else None,
     redoc_url="/redoc" if DEV_MODE else None,
@@ -95,10 +145,15 @@ app = FastAPI(
 # ── STIG checker singleton ─────────────────────────────────────────────────────
 _stig_checker = STIGChecker()
 
-# ── Middleware stack (order matters: outermost = last added) ───────────────────
+# ── Middleware stack (order matters: outermost = last added, executes first) ───
+# Execution order: CORS → mTLS → RequestValidation → SecurityHeaders → routes
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestValidationMiddleware)
+# SC-8 / IA-3: mTLS inbound API enforcement (operator tooling + SIEM push agents)
+if os.getenv("MTLS_MODE", "").lower() in ("proxy", "native"):
+    app.add_middleware(_MTLSMiddleware)
+    logger.info("Aegis mTLS middleware ENABLED (mode=%s)", os.getenv("MTLS_MODE"))
 
 _cors_origins: list[str] = [
     o.strip()
@@ -109,7 +164,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_methods=["GET", "POST"],
-    allow_headers=["Authorization", "X-API-Key", "X-Correlation-ID", "Content-Type"],
+    allow_headers=["Authorization", "X-API-Key", "X-Correlation-ID", "Content-Type",
+                   "X-Client-Cert", "X-Forwarded-Client-Cert"],
     allow_credentials=False,
 )
 
@@ -120,6 +176,10 @@ scan_results: dict[str, Any] = {}
 # ── Analytics indexer ─────────────────────────────────────────────────────────
 
 _indexer = ElasticIndexer()
+
+# ── ConMon pipeline state ──────────────────────────────────────────────────────
+# last_conmon_run holds the ConMonRunResult from the most recent pipeline run.
+_last_conmon_run: dict | None = None
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────
@@ -144,10 +204,24 @@ async def startup_checks():
         )
 
     mode = "DRY RUN" if DRY_RUN else "LIVE REMEDIATION"
-    logger.info(f"Aegis v2.5.0 starting in {mode} mode.")
+    logger.info(f"Aegis v2.10.0 starting in {mode} mode.")
 
     acas_mode = os.getenv("ACAS_MODE", "xml")
     logger.info("ACAS scanner mode: %s (RA-5 / SI-2)", acas_mode)
+
+    # v2.7: mTLS config validation (SC-8, IA-3)
+    mtls_mode = os.getenv("MTLS_MODE", "").lower()
+    mtls_summary: dict = {}
+    if mtls_mode in ("proxy", "native"):
+        try:
+            mtls_summary = _check_mtls_config()
+        except Exception as exc:
+            logger.error("Aegis mTLS config error: %s", exc)
+    else:
+        logger.warning(
+            "Aegis mTLS: NOT ENABLED (MTLS_MODE not set). "
+            "Set MTLS_MODE=proxy|native for IL4/IL5 inter-service transport (SC-8)."
+        )
 
     if ELASTICSEARCH_ENABLED:
         if _indexer.is_available():
@@ -159,18 +233,50 @@ async def startup_checks():
                 "Check ELASTICSEARCH_URL and credentials."
             )
 
+    # v2.8: Encryption at rest configuration check (SC-28)
+    enc_summary: dict = {}
+    try:
+        enc_summary = _check_enc_config()
+    except Exception as exc:
+        logger.error("Aegis encryption at rest config error: %s", exc)
+
+    # v2.10: ConMon pipeline configuration check (CA-7)
+    conmon_summary: dict = {}
+    try:
+        conmon_summary = _check_conmon_config()
+        if conmon_summary.get("emass_configured"):
+            logger.info(
+                "ConMon pipeline CONFIGURED — eMASS system %s (dry_run=%s)",
+                conmon_summary.get("emass_system_id", "?"),
+                conmon_summary.get("dry_run", True),
+            )
+        else:
+            logger.warning(
+                "ConMon pipeline: eMASS NOT configured "
+                "(set EMASS_URL + EMASS_API_KEY + EMASS_SYSTEM_ID for CA-7 automation)."
+            )
+    except Exception as exc:
+        logger.error("Aegis ConMon config error: %s", exc)
+
     # AU-2 / AU-12: emit auditable startup event
     log_event(
         AuditEventType.STARTUP,
         AuditOutcome.SUCCESS,
         detail={
-            "version": "2.5.0",
+            "version": "2.10.0",
             "dev_mode": DEV_MODE,
             "dry_run": DRY_RUN,
             "auto_remediate": AUTO_REMEDIATE,
             "fips_active": fips_summary.get("fips_active", False),
             "fips_environment": fips_summary.get("environment", "unknown"),
             "acas_mode": os.getenv("ACAS_MODE", "xml"),
+            "mtls_mode": mtls_mode or "disabled",
+            "mtls_inbound_certs": mtls_summary.get("inbound_certs_present", False),
+            "mtls_outbound_certs": mtls_summary.get("outbound_certs_present", False),
+            "enc_provider": enc_summary.get("provider", "unknown"),
+            "enc_provider_ready": enc_summary.get("provider_ready", False),
+            "conmon_configured": conmon_summary.get("emass_configured", False),
+            "conmon_dry_run": conmon_summary.get("dry_run", True),
         },
     )
 
@@ -361,13 +467,17 @@ def root():
     """Public health check — no auth required."""
     fips_info = _fips.compliance_summary()
     return {
-        "service":        "Aegis",
-        "version":        "2.4.0",
-        "status":         "running",
-        "mode":           "dry_run" if DRY_RUN else "live",
-        "auto_remediate": AUTO_REMEDIATE,
-        "fips_active":    fips_info.get("fips_active", False),
-        "il_environment": fips_info.get("environment", "unknown"),
+        "service":          "Aegis",
+        "version":          "2.10.0",
+        "status":           "running",
+        "mode":             "dry_run" if DRY_RUN else "live",
+        "auto_remediate":   AUTO_REMEDIATE,
+        "fips_active":      fips_info.get("fips_active", False),
+        "il_environment":   fips_info.get("environment", "unknown"),
+        "mtls_enabled":     os.getenv("MTLS_MODE", "").lower() in ("proxy", "native"),
+        "mtls_mode":        os.getenv("MTLS_MODE", "disabled"),
+        "enc_provider":     os.getenv("ENC_PROVIDER", "env"),
+        "conmon_configured": bool(os.getenv("EMASS_URL")),
     }
 
 
@@ -861,3 +971,293 @@ async def acas_trigger_scan(
         "message": "ACAS scan started. Poll GET /api/acas for results.",
         "actor":   actor,
     }
+
+
+# ── Encryption at rest (v2.8.0) ───────────────────────────────────────────────
+# SC-28 (Protection of Information at Rest), SC-28(1) (Cryptographic Protection)
+
+@app.get("/api/encryption/status")
+async def encryption_status(
+    caller: dict = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Return encryption-at-rest provider status and configuration.
+    Reports provider type, key ID metadata (never key material), and readiness.
+
+    NIST SC-28(1) — ADMIN+ only.
+    """
+    from modules.security.encryption import ENC_PROVIDER, ENC_KMS_KEY_ID, ENC_VAULT_KEY
+    from modules.security.encryption import _get_provider
+    provider_ready = False
+    provider_name  = "unknown"
+    try:
+        p = _get_provider()
+        provider_name  = p.provider_name()
+        provider_ready = True
+    except Exception as exc:
+        provider_name = f"ERROR: {exc}"
+
+    log_event(
+        AuditEventType.ACCESS,
+        AuditOutcome.SUCCESS,
+        detail={"resource": "/api/encryption/status", "provider": ENC_PROVIDER},
+    )
+    return {
+        "provider":       ENC_PROVIDER,
+        "provider_name":  provider_name,
+        "provider_ready": provider_ready,
+        "kms_key_set":    bool(ENC_KMS_KEY_ID),
+        "vault_key":      ENC_VAULT_KEY,
+        "master_key_set": bool(os.getenv("ENC_MASTER_KEY")),
+        "nist":           ["SC-28", "SC-28(1)", "SC-12", "SC-12(1)"],
+    }
+
+
+@app.post("/api/encryption/rotate")
+async def rotate_encryption_keys(
+    request: "Any",
+    background_tasks: BackgroundTasks,
+    caller: dict = Depends(require_role(Role.OWNER)),
+):
+    """
+    Trigger key rotation for encrypted columns in a ClickHouse table.
+
+    Re-encrypts each blob: decrypt → plaintext → fresh DEK under current KEK.
+    Runs as a background task; non-blocking response.
+
+    Body (JSON):
+      { "table": "findings", "columns": ["host", "plugin_output"], "batch_size": 500 }
+
+    OWNER only — audit-logged. NIST SC-28(1), SC-12.
+    """
+    import re as _re
+    body: dict = await request.json()
+    table    = body.get("table", "")
+    columns  = body.get("columns", [])
+    batch_sz = int(body.get("batch_size", 500))
+
+    if not table or not columns:
+        raise HTTPException(status_code=422, detail="'table' and 'columns' are required")
+
+    for col in columns:
+        if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$", col):
+            raise HTTPException(status_code=422, detail=f"Invalid column name: {col!r}")
+    if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]{0,127}$", table):
+        raise HTTPException(status_code=422, detail=f"Invalid table name: {table!r}")
+
+    log_event(
+        AuditEventType.CONFIG_CHANGE,
+        AuditOutcome.SUCCESS,
+        detail={"action": "enc_rotation_started", "table": table, "columns": columns},
+    )
+
+    def _do_rotate() -> None:
+        try:
+            result = KeyRotator().rotate_clickhouse(table=table, columns=columns, batch_size=batch_sz)
+            logger.info("Aegis key rotation complete: table=%s result=%s", table, result)
+        except Exception as exc:
+            logger.error("Aegis key rotation failed: table=%s error=%s", table, exc)
+
+    import threading
+    threading.Thread(target=_do_rotate, daemon=True, name="aegis-key-rotator").start()
+
+    return {
+        "status":  "rotation_started",
+        "table":   table,
+        "columns": columns,
+        "message": "Rotation running in background. Check logs for completion.",
+    }
+
+
+# ── eMASS SSP Auto-Generator (v2.9.0) ─────────────────────────────────────────
+# CA-2 (Control Assessments), CA-5 (POA&M), CA-6 (Authorization), PL-2 (SSP)
+
+@app.get("/api/ssp")
+async def get_ssp_json(
+    caller: dict = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Generate and return the System Security Plan as an eMASS API import payload.
+
+    The SSP is built live from Aegis posture data:
+      - FIPS status (SC-13 / IA-7 controls)
+      - STIG checker results
+      - ACAS/Nessus scan summary + POA&M candidates
+      - mTLS configuration (SC-8, IA-3 controls)
+      - Encryption configuration (SC-28 controls)
+
+    Returns JSON suitable for POST to eMASS /api/v3/systems/{id}/controls.
+
+    NIST PL-2, CA-2, CA-6 — ADMIN+ only.
+    """
+    log_event(
+        AuditEventType.ACCESS,
+        AuditOutcome.SUCCESS,
+        detail={"resource": "/api/ssp", "format": "json"},
+    )
+    try:
+        ssp = AegisSspGenerator().build()
+        return json.loads(ssp.to_emass_json())
+    except Exception as exc:
+        logger.error("SSP generation failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"SSP generation error: {exc}")
+
+
+@app.get("/api/ssp/csv")
+async def get_ssp_csv(
+    caller: dict = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Generate and return the SSP Controls worksheet as a CSV file.
+
+    Compatible with eMASS Manual Upload (Controls worksheet tab).
+    Download and import via eMASS System → Artifacts → Bulk Import.
+
+    NIST PL-2, CA-2 — ADMIN+ only.
+    """
+    from fastapi.responses import StreamingResponse
+
+    log_event(
+        AuditEventType.ACCESS,
+        AuditOutcome.SUCCESS,
+        detail={"resource": "/api/ssp/csv", "format": "csv"},
+    )
+    try:
+        ssp     = AegisSspGenerator().build()
+        csv_str = ssp.to_emass_csv()
+        filename = f"aegis_ssp_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+        return StreamingResponse(
+            iter([csv_str]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as exc:
+        logger.error("SSP CSV generation failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"SSP CSV error: {exc}")
+
+
+@app.get("/api/ssp/md")
+async def get_ssp_markdown(
+    caller: dict = Depends(require_role(Role.ANALYST)),
+):
+    """
+    Generate and return the SSP as a Markdown narrative document.
+
+    Suitable for DAA review package, human-readable control narratives,
+    and inclusion in the Authorization package (DAAPM v2.2 format).
+
+    NIST PL-2 — ANALYST+ (read-only, no sensitive data).
+    """
+    from fastapi.responses import PlainTextResponse
+
+    log_event(
+        AuditEventType.ACCESS,
+        AuditOutcome.SUCCESS,
+        detail={"resource": "/api/ssp/md", "format": "markdown"},
+    )
+    try:
+        ssp = AegisSspGenerator().build()
+        return PlainTextResponse(ssp.to_markdown(), media_type="text/markdown")
+    except Exception as exc:
+        logger.error("SSP Markdown generation failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"SSP Markdown error: {exc}")
+
+
+# ── ConMon endpoints  (v2.10.0) ────────────────────────────────────────────────
+
+def _run_conmon_pipeline(actor: str) -> None:
+    """Background task: run ConMon pipeline and persist last result."""
+    global _last_conmon_run
+    try:
+        result = ConMonPipeline().run()
+        _last_conmon_run = result.to_summary()
+        _last_conmon_run["completed_by"] = actor
+        log_event(
+            AuditEventType.ACCESS,
+            AuditOutcome.SUCCESS,
+            actor=actor,
+            detail={"resource": "/api/conmon/run", "result": _last_conmon_run},
+        )
+        logger.info(
+            "ConMon pipeline completed: stage=%s emass_controls=%d poams=%d errors=%d",
+            result.stage,
+            result.emass_sync.controls_updated if result.emass_sync else 0,
+            result.emass_sync.poams_added if result.emass_sync else 0,
+            result.error_count,
+        )
+    except Exception as exc:
+        _last_conmon_run = {"status": "error", "error": str(exc), "completed_by": actor}
+        log_event(
+            AuditEventType.ACCESS,
+            AuditOutcome.FAILURE,
+            actor=actor,
+            detail={"resource": "/api/conmon/run", "error": str(exc)},
+        )
+        logger.error("ConMon pipeline error: %s", exc)
+
+
+@app.post("/api/conmon/run", status_code=202)
+async def run_conmon(
+    background_tasks: BackgroundTasks,
+    caller: dict = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Trigger an on-demand Continuous Monitoring (ConMon) pipeline run.
+
+    Stages: SCAN → ASSESS → REPORT → PUSH → ALERT.
+    Results are pushed to eMASS (PUT controls, POST POA&M, POST artifact).
+    SIEM and Slack alerts fire on completion.
+
+    Set CONMON_DRY_RUN=true (default) for a full run without eMASS writes.
+
+    NIST CA-7, RA-5, SI-4 — ADMIN+ only.
+    """
+    actor = caller.get("sub", "unknown")
+    run_id = str(uuid.uuid4())
+    log_event(
+        AuditEventType.ACCESS,
+        AuditOutcome.SUCCESS,
+        actor=actor,
+        detail={"resource": "/api/conmon/run", "run_id": run_id, "action": "queued"},
+    )
+    background_tasks.add_task(_run_conmon_pipeline, actor)
+    return {
+        "message": "ConMon pipeline queued",
+        "run_id": run_id,
+        "dry_run": bool(os.getenv("CONMON_DRY_RUN", "true").lower() in ("1", "true", "yes")),
+    }
+
+
+@app.get("/api/conmon/status")
+async def get_conmon_status(
+    caller: dict = Depends(require_role(Role.ANALYST)),
+):
+    """
+    Return the summary of the last ConMon pipeline run.
+
+    Includes: stage reached, scan counts, STIG CAT-I/II/III findings,
+    eMASS sync result (controls updated, POA&M entries added), error count,
+    and SIEM/Slack alert status.
+
+    NIST CA-7 — ANALYST+ (read-only, no sensitive control data exposed).
+    """
+    log_event(
+        AuditEventType.ACCESS,
+        AuditOutcome.SUCCESS,
+        actor=caller.get("sub", "unknown"),
+        detail={"resource": "/api/conmon/status"},
+    )
+    if _last_conmon_run is None:
+        return {
+            "status": "no_run",
+            "message": "No ConMon run has been executed in this session. "
+                       "POST /api/conmon/run to trigger a run.",
+            "conmon_configured": bool(os.getenv("EMASS_URL")),
+            "dry_run_mode": bool(os.getenv("CONMON_DRY_RUN", "true").lower() in ("1", "true", "yes")),
+        }
+    return _last_conmon_run
+
+
+# Import json and datetime at the module level for SSP endpoints
+import json
+from datetime import datetime, timezone
