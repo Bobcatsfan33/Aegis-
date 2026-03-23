@@ -7,7 +7,7 @@
 fastapi==0.115.6
 uvicorn[standard]==0.32.1
 python-multipart==0.0.12
-starlette==0.41.3                # pinned separately — FastAPI transitive dep
+starlette==1.0.0                # pinned separately — FastAPI transitive dep
 
 # ── JWT / OIDC ────────────────────────────────────────────────────────────────
 python-jose[cryptography]==3.3.0
