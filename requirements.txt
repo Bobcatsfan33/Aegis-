@@ -11,7 +11,7 @@ starlette==0.41.3                # pinned separately — FastAPI transitive dep
 
 # ── JWT / OIDC ────────────────────────────────────────────────────────────────
 python-jose[cryptography]==3.3.0
-cryptography==44.0.0
+cryptography==46.0.5
 
 # ── HTTP client ───────────────────────────────────────────────────────────────
 requests==2.32.3
