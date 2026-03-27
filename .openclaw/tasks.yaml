@@ -1,0 +1,216 @@
+# OpenClaw Task Queue — Aegis
+# Tasks are picked up by the OpenClaw engineering bot.
+# Claude creates tasks during sessions. OpenClaw works them autonomously on feature branches.
+# Status: pending | in_progress | pr_opened | review | completed | blocked
+# Priority: p0 (critical path) | p1 (high value) | p2 (standard) | p3 (nice to have)
+
+tasks:
+
+  # ============================================================
+  # ROUND 1 — Scanner Expansion + Tests + Finding Dedup
+  # These tasks have no dependencies and can start immediately.
+  # ============================================================
+
+  - id: azure-scanner-expansion
+    phase: "1"
+    priority: p0
+    type: pattern-replicate
+    template: modules/scanners/aws/scanner.py
+    description: >
+      Expand modules/scanners/azure/scanner.py from 2 checks to match the
+      depth of the AWS scanner. Follow the exact pattern in aws/scanner.py:
+      each check is a method that returns a list of Finding objects with
+      severity, resource_id, details, and remediation fields.
+      Add the following checks:
+      1. Key Vault: check for soft-delete enabled, purge protection, network ACLs
+      2. SQL Database: check for transparent data encryption, firewall rules allowing 0.0.0.0
+      3. Managed Disk Encryption: check for encryption at rest on all disks
+      4. App Service: check for minimum TLS version (1.2), HTTPS-only, managed identity
+      5. Virtual Network: check for NSG association on all subnets
+      6. Storage Account: check for HTTPS-only, minimum TLS 1.2, encryption scope
+      Use azure-mgmt-* SDK. Each check must have detailed remediation hints.
+    output: modules/scanners/azure/scanner.py
+    tests: tests/test_azure_scanner.py
+    branch: feature/azure-scanner-expansion
+    status: pending
+    assigned: openclaw
+
+  - id: gcp-scanner-expansion
+    phase: "1"
+    priority: p0
+    type: pattern-replicate
+    template: modules/scanners/aws/scanner.py
+    description: >
+      Expand modules/scanners/gcp/scanner.py from 1 check to match the
+      depth of the AWS scanner. Follow the exact pattern in aws/scanner.py.
+      Add the following checks:
+      1. Compute Engine: default service account usage, public IP on instances,
+         serial port access, OS Login enforcement
+      2. Cloud Storage: public bucket access, uniform bucket-level ACL,
+         encryption (CMEK vs Google-managed)
+      3. Cloud SQL: public IP enabled, SSL enforcement, authorized networks
+      4. IAM: overly permissive service account roles (roles/owner, roles/editor
+         on service accounts), user-managed service account keys
+      5. VPC: default network usage, legacy network presence
+      6. Logging: audit logging enabled on all services
+      Use google-cloud-* SDK. Each check must have remediation hints.
+    output: modules/scanners/gcp/scanner.py
+    tests: tests/test_gcp_scanner.py
+    branch: feature/gcp-scanner-expansion
+    status: pending
+    assigned: openclaw
+
+  - id: unit-tests-network-scanner
+    phase: "1"
+    priority: p1
+    type: test-generation
+    description: >
+      Generate unit tests for modules/scanners/network/scanner.py.
+      Test nmap-based scanning with mocked nmap output.
+      Test socket fallback mode when nmap is unavailable.
+      Test dangerous port detection for all listed dangerous ports.
+      Test finding generation format matches base.Finding dataclass.
+      Test timeout and error handling.
+      Use pytest. Mock subprocess calls for nmap and socket connections.
+    output: tests/test_network_scanner.py
+    branch: feature/tests-network-scanner
+    status: pending
+    assigned: openclaw
+
+  - id: unit-tests-aws-scanner
+    phase: "1"
+    priority: p1
+    type: test-generation
+    description: >
+      Generate unit tests for modules/scanners/aws/scanner.py.
+      Test each check independently: S3 Block Public Access, S3 ACLs,
+      EC2 security groups, IAM root MFA, IAM root access keys,
+      CloudTrail status, RDS public accessibility.
+      Mock boto3 client responses for each service.
+      Test error handling when AWS credentials are missing.
+      Test finding severity and remediation text accuracy.
+      Use pytest with moto or manual boto3 mocks.
+    output: tests/test_aws_scanner.py
+    branch: feature/tests-aws-scanner
+    status: pending
+    assigned: openclaw
+
+  - id: unit-tests-orchestrator
+    phase: "1"
+    priority: p1
+    type: test-generation
+    description: >
+      Generate unit tests for modules/agents/orchestrator.py.
+      Test the agentic loop with mocked LLM responses.
+      Test tool dispatch for all 5 tools: cloud fix, network block,
+      user sandbox, SIEM alert, risk explanation.
+      Test max rounds limit (8 iterations).
+      Test error handling for failed API calls.
+      Test multiple LLM backends: OpenAI, Ollama, Groq patterns.
+      Use pytest. Mock httpx/openai calls.
+    output: tests/test_orchestrator.py
+    branch: feature/tests-orchestrator
+    status: pending
+    assigned: openclaw
+
+  - id: unit-tests-siem-agent
+    phase: "1"
+    priority: p1
+    type: test-generation
+    description: >
+      Generate unit tests for modules/agents/siem_agent.py.
+      Test webhook transport (POST JSON).
+      Test RFC 5424 syslog formatting (UDP/TCP/TLS).
+      Test CEF format generation for ArcSight/Splunk.
+      Test severity normalization across all three formats.
+      Test multi-transport simultaneous dispatch.
+      Test graceful degradation when SIEM is unreachable.
+      Use pytest. Mock socket and httpx.
+    output: tests/test_siem_agent.py
+    branch: feature/tests-siem-agent
+    status: pending
+    assigned: openclaw
+
+  - id: finding-deduplication
+    phase: "1"
+    priority: p1
+    type: feature
+    description: >
+      Add finding deduplication to modules/scanners/base.py.
+      When the same resource_id + finding type combination is detected in
+      consecutive scans, suppress duplicates and instead update the
+      existing finding's last_seen timestamp.
+      Add a dedup_key property to the Finding dataclass: hash of
+      (scanner_type, resource_id, title, severity).
+      Add a FindingStore class that tracks seen findings and returns
+      only new or changed findings per scan cycle.
+      This prevents N identical findings from flooding OpenSearch.
+    output: modules/scanners/base.py
+    tests: tests/test_finding_dedup.py
+    branch: feature/finding-deduplication
+    status: pending
+    assigned: openclaw
+
+  - id: unit-tests-encryption
+    phase: "1"
+    priority: p1
+    type: test-generation
+    description: >
+      Generate unit tests for modules/security/encryption.py.
+      Test AES-256-GCM encrypt/decrypt round-trip.
+      Test envelope encryption (DEK wrapping with KEK).
+      Test blob format parsing (version, IV, wrapped DEK, ciphertext).
+      Test EncryptedColumn descriptor with mock SQLAlchemy model.
+      Test KeyRotator (decrypt old, encrypt new).
+      Test HMAC integrity check.
+      Test each KEK provider: env var, AWS KMS (mocked), Azure Key Vault (mocked).
+      Use pytest. Mock cloud SDK calls.
+    output: tests/test_encryption.py
+    branch: feature/tests-encryption
+    status: pending
+    assigned: openclaw
+
+  - id: unit-tests-audit-log
+    phase: "1"
+    priority: p1
+    type: test-generation
+    description: >
+      Generate unit tests for modules/security/audit_log.py.
+      Test hash chain integrity (SHA-256 chaining of prev_hash).
+      Test HMAC-SHA256 tamper detection.
+      Test all 15 event types.
+      Test verify_log_integrity() with valid and tampered logs.
+      Test multiple backends: file, Redis, SIEM webhook.
+      Test concurrent write safety.
+      Use pytest. Mock Redis and HTTP.
+    output: tests/test_audit_log.py
+    branch: feature/tests-audit-log
+    status: pending
+    assigned: openclaw
+
+  - id: iptables-persistence
+    phase: "1"
+    priority: p2
+    type: feature
+    description: >
+      Fix modules/agents/network_agent.py so iptables rules persist
+      across container/host reboots. After any iptables rule is applied:
+      1. Save rules to /etc/iptables/rules.v4 using iptables-save
+      2. Add a startup script that loads rules via iptables-restore
+      3. Update Dockerfile to install iptables-persistent
+      4. Add input validation: reject private IPs in block_ip() to
+         prevent admin lockout. Reject port 22 in close_port() with
+         a force flag required to override.
+    output: modules/agents/network_agent.py
+    tests: tests/test_network_agent.py
+    branch: feature/iptables-persistence
+    status: pending
+    assigned: openclaw
+
+  # ============================================================
+  # ROUND 2 — Will be populated after Claude builds:
+  # - Host discovery module
+  # - DNS monitoring module
+  # - Detection rule engine
+  # - TokenDNA-Aegis bridge
+  # ============================================================
