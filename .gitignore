@@ -36,6 +36,7 @@ htmlcov/
 # ── Runtime output ────────────────────────────────────────────
 report.txt
 reports/
+!modules/reports/        # source module — must be tracked
 *.log
 
 # ── Editors ───────────────────────────────────────────────────

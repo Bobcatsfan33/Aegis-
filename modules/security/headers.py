@@ -114,7 +114,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         # ── Scrub server fingerprint ───────────────────────────────────────
         response.headers["Server"] = "Aegis"
-        response.headers.pop("X-Powered-By", None)
+        response.headers.__delitem__("X-Powered-By") if "X-Powered-By" in response.headers else None
 
         # ── Correlation ID passthrough ─────────────────────────────────────
         response.headers["X-Correlation-ID"] = correlation_id
