@@ -1,0 +1,55 @@
+# C2 Beaconing Detection Rule
+#
+# Purpose: Detects Command & Control (C2) communication patterns where
+# a compromised host repeatedly communicates with an external server at
+# regular intervals. This is a post-exploitation indicator and key part
+# of the attack chain (MITRE ATT&CK: Command and Control, T1071).
+#
+# Trigger condition: Regular, periodic connections from internal host to
+# external IP at consistent time intervals (detected via pattern matching
+# on outbound traffic to suspicious destinations).
+#
+# Note: This simplified rule detects connections to known indicators.
+# A full implementation would include inter-packet timing analysis.
+#
+# Response: Generate alert and log for forensic investigation.
+
+rule_id: AEGIS-DET-003
+name: C2 Beaconing Detection
+description: Detects regular command & control communication patterns from compromised hosts
+severity: critical
+category: c2_beaconing
+mitre_technique: T1071
+mitre_tactic: command-and-control
+nist_control: SI-4
+cwe_id: CWE-200
+
+# Pattern-based detection:
+# - Match outbound connections to known C2 indicators
+# - Detect communications to high-entropy or suspicious external IPs
+# - Flag repeated connections at regular intervals
+conditions:
+  type: pattern
+  field: dest_ip
+  # Regex to match suspicious IP patterns (high-entropy, unusual networks)
+  # Example: matches IPs not in private ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+  regex: '^(?!10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.).*'
+
+# Supplementary static condition: detect high-port connections (non-standard)
+# High ports (>5000) to external IPs often indicate C2 tunneling
+secondary_conditions:
+  type: static
+  field: dest_port
+  operator: "gt"
+  value: 5000
+
+actions:
+  - alert
+  - block
+  - log
+
+enabled: true
+
+# Very short cooldown for critical threat
+# Even a single confirmed C2 beacon warrants immediate response
+cooldown_seconds: 60

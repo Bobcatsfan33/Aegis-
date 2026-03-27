@@ -1,0 +1,64 @@
+# Policy Violation Detection Rule
+#
+# Purpose: Detects network traffic that violates corporate security policy,
+# such as accessing blocked destinations, using forbidden protocols, or
+# connecting to banned IP ranges. This is a preventive control that catches
+# both insider threats and external policy violations.
+#
+# Trigger condition: Traffic to known-malicious or blocked IP addresses
+# (maintained in a threat intelligence feed), use of unauthorized protocols,
+# or connections to blocked services like P2P, torrenting, or streaming.
+#
+# Response: Generate alert, log for compliance audit, and optionally block
+# the traffic to enforce policy.
+
+rule_id: AEGIS-DET-007
+name: Policy Violation Detection
+description: Detects network traffic that violates security or compliance policy
+severity: medium
+category: policy_violation
+mitre_technique: T1133
+mitre_tactic: initial-access
+nist_control: AC-3
+cwe_id: CWE-693
+
+# Static condition: check destination against blocked/malicious IPs
+# (In production, this would be pulled from threat intel feeds)
+conditions:
+  type: static
+  field: dest_ip
+  operator: "in"
+  value:
+    # Example malicious/blocked IPs (would be dynamically loaded in production)
+    - "192.0.2.0"      # TEST-NET-1 (example)
+    - "198.51.100.0"   # TEST-NET-2 (example)
+    - "203.0.113.0"    # TEST-NET-3 (example)
+
+# Supplementary: check for banned ports/protocols
+secondary_conditions:
+  type: static
+  field: dest_port
+  operator: "in"
+  value:
+    - 6667    # IRC (botnets often communicate here)
+    - 6697    # IRC over TLS
+    - 8333    # Bitcoin
+    - 6881    # BitTorrent DHT
+    - 6882
+    - 6883
+    - 6884
+    - 6885
+    - 6886
+    - 6887
+    - 6888
+    - 6889
+
+actions:
+  - alert
+  - log      # Log for compliance audit
+  - block    # Enforce policy by blocking
+
+enabled: true
+
+# Standard cooldown: policy violations may be recurring
+cooldown_seconds: 300

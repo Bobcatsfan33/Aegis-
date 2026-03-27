@@ -1,0 +1,63 @@
+# Rogue Device Detection Rule
+#
+# Purpose: Detects unauthorized or compromised devices connecting to the
+# corporate network. This includes personal devices, IoT devices not on the
+# allow-list, or devices infected with malware attempting to communicate
+# externally or access restricted internal services.
+#
+# Trigger condition: Connections from a source IP that is not in the known
+# device registry AND attempts to access restricted ports/services. Can also
+# trigger on unusual user-agent strings or MAC addresses not in allow-list.
+#
+# Response: Generate alert, log for investigation, and potentially isolate
+# the device from the network until verified by IT.
+
+rule_id: AEGIS-DET-006
+name: Rogue Device Detection
+description: Detects unauthorized or suspicious devices connecting to network
+severity: high
+category: rogue_device
+mitre_technique: T1133
+mitre_tactic: initial-access
+nist_control: AC-2
+cwe_id: CWE-668
+
+# Pattern-based detection:
+# - Match source IPs not in the known internal device range
+# - Combined with access to admin/restricted services (ports 22, 3389, 389, etc)
+conditions:
+  type: pattern
+  field: source_ip
+  # Match IPs outside known corporate ranges (inverted internal subnet)
+  # Example: flag anything not in 10.0.0.0/8 attempting admin access
+  regex: '^(?!10\.).*'
+
+# Supplementary: check destination ports
+# Access to admin/directory services from unknown IPs is very suspicious
+secondary_conditions:
+  type: static
+  field: dest_port
+  operator: "in"
+  value:
+    - 22      # SSH
+    - 3389    # RDP
+    - 389     # LDAP (AD)
+    - 636     # LDAPS
+    - 445     # SMB
+    - 135     # RPC (Windows)
+    - 139     # NetBIOS
+    - 1433    # SQL Server
+    - 5432    # PostgreSQL
+    - 3306    # MySQL
+    - 27017   # MongoDB
+
+actions:
+  - alert
+  - block    # Block the rogue device
+  - log      # Log for network investigation
+
+enabled: true
+
+# Long cooldown: rogue device detection should not be noisy
+# Once blocked, repeated connection attempts are expected
+cooldown_seconds: 600

@@ -1,0 +1,48 @@
+# Lateral Movement Detection Rule
+#
+# Purpose: Detects internal network traffic patterns that indicate an attacker
+# has compromised one host and is attempting to move laterally to other hosts
+# (MITRE ATT&CK: Lateral Movement, T1021). This is a critical phase of an attack
+# where the attacker expands their foothold within the network.
+#
+# Trigger condition: A single internal host initiating connections to many
+# other internal hosts within a short timeframe. This scanning-like behavior
+# from internal sources is abnormal and warrants investigation.
+#
+# Response: Generate high-severity alert and log all suspicious lateral
+# movement traffic for forensic analysis.
+
+rule_id: AEGIS-DET-005
+name: Lateral Movement Detection
+description: Detects a single host attempting to reach multiple other internal hosts
+severity: high
+category: lateral_movement
+mitre_technique: T1021
+mitre_tactic: lateral-movement
+nist_control: AC-4
+cwe_id: CWE-200
+
+# Threshold-based detection:
+# - Group by source_ip (the potentially compromised host)
+# - Count unique destination IPs within sliding window
+# - Trigger when one source talks to ≥15 different internal IPs in 60 seconds
+conditions:
+  type: threshold
+  count: 15
+  window_seconds: 60
+  group_by: source_ip
+  filter:
+    unique_field: dest_ip
+    # Filter to private/internal ranges only
+    dest_ip_range: "10.0.0.0/8"  # Example: corporate internal network
+
+actions:
+  - alert
+  - block  # Consider isolating the source host to prevent further spread
+  - log
+
+enabled: true
+
+# Medium cooldown: allow detection of different lateral movement campaigns
+# but prevent alert spam within a single incident
+cooldown_seconds: 180

@@ -1,0 +1,45 @@
+# Port Scan Detection Rule
+#
+# Purpose: Detects reconnaissance activity via rapid connection attempts to
+# multiple ports on a single target host. Port scanning is often the first
+# phase of an attack (MITRE ATT&CK: Reconnaissance, T1046).
+#
+# Trigger condition: A single source IP attempting 20+ connections to different
+# ports within a 60-second window.
+#
+# Response: Generate alert and log for investigation. May trigger network
+# firewall rules to block further scanning from the source.
+
+rule_id: AEGIS-DET-001
+name: Port Scan Detection
+description: Detects rapid connection attempts to multiple ports on a single host
+severity: medium
+category: reconnaissance
+mitre_technique: T1046
+mitre_tactic: reconnaissance
+nist_control: SI-4
+cwe_id: CWE-200
+
+# Threshold-based detection:
+# - Monitor connections from each source_ip separately
+# - Count events within a 60-second sliding window
+# - Trigger when ≥20 unique destination ports detected
+conditions:
+  type: threshold
+  count: 20
+  window_seconds: 60
+  group_by: source_ip
+  filter:
+    unique_field: dest_port  # Count unique dest_ports
+
+# Actions to take when rule triggers
+actions:
+  - alert    # Send to SIEM
+  - log      # Log locally
+
+# Rule state
+enabled: true
+
+# Cooldown: Suppress repeated alerts from same source within 5 minutes
+# Prevents alert fatigue when a scan is ongoing from one source
+cooldown_seconds: 300

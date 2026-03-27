@@ -1,0 +1,57 @@
+# Data Exfiltration Detection Rule
+#
+# Purpose: Detects large data transfers leaving the network, which indicates
+# potential data theft or breach. Exfiltration is often the final stage of
+# an attack chain and represents direct business impact.
+#
+# Trigger condition: Unusually large outbound data transfer (payload_size >
+# configurable threshold) from internal host to external destination. Combined
+# with uncommon destination ports, this suggests data beaconing or exfil.
+#
+# Response: Generate high-severity alert, log, and potentially block to
+# preserve evidence and prevent further data loss.
+
+rule_id: AEGIS-DET-004
+name: Data Exfiltration Detection
+description: Detects unusually large data transfers to external networks (potential data theft)
+severity: critical
+category: data_exfiltration
+mitre_technique: T1041
+mitre_tactic: exfiltration
+nist_control: SI-4
+cwe_id: CWE-200
+
+# Static condition: detect large outbound transfers
+# Threshold: 100 MB per single connection (typical business transfers are <10 MB)
+conditions:
+  type: static
+  field: payload_size
+  operator: "gt"
+  value: 104857600  # 100 MB in bytes
+
+# Supplementary check: transfer to non-standard ports often indicates tunneling
+secondary_conditions:
+  type: static
+  field: dest_port
+  operator: "not_in"
+  value:
+    - 80      # HTTP
+    - 443     # HTTPS
+    - 21      # FTP (legitimate but restricted)
+    - 22      # SSH
+    - 25      # SMTP
+    - 53      # DNS
+    - 123     # NTP
+    - 5000    # Common app ports
+    - 8080
+    - 8443
+
+actions:
+  - alert
+  - block    # Immediately stop the transfer
+  - log      # Preserve full packet capture if available
+
+enabled: true
+
+# Very short cooldown: each large transfer is a distinct exfil event
+cooldown_seconds: 30

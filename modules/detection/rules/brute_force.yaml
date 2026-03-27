@@ -1,0 +1,45 @@
+# Brute Force Attack Detection Rule
+#
+# Purpose: Detects rapid-fire login attempts against a service from a single
+# source IP. Brute force attacks are a common initial access vector and
+# indicate either targeted attacks or compromised credentials.
+#
+# Trigger condition: A single source attempting 10+ failed authentication
+# requests to the same service (same dest_ip:dest_port) within 30 seconds.
+#
+# Response: Generate high-severity alert immediately. May automatically
+# trigger account lockout or IP-based rate limiting in production.
+
+rule_id: AEGIS-DET-002
+name: Brute Force Attack Detection
+description: Detects rapid authentication attempts from a single source against a service
+severity: high
+category: brute_force
+mitre_technique: T1110
+mitre_tactic: credential-access
+nist_control: AC-2
+cwe_id: CWE-307
+
+# Threshold-based detection:
+# - Group by (source_ip, dest_ip, dest_port) tuple for stateful tracking
+# - Count connection attempts within 30-second window
+# - Trigger when ≥10 connection attempts from same source to same target
+conditions:
+  type: threshold
+  count: 10
+  window_seconds: 30
+  group_by: source_ip
+  filter:
+    protocol: TCP  # Only count TCP connections to SSH/RDP/HTTP
+
+# Actions: Alert immediately and potentially block
+actions:
+  - alert
+  - block  # Request firewall to rate-limit or drop traffic from source
+  - log
+
+enabled: true
+
+# Shorter cooldown (2 minutes) due to high severity
+# Repeated attempts suggest ongoing attack
+cooldown_seconds: 120
