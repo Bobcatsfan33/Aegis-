@@ -35,8 +35,14 @@ COPY --from=builder /install /usr/local
 # Copy application source
 COPY . .
 
+# Ensure all source files are readable by the non-root user
+RUN chmod -R a+rX /app
+
 # Remove .env if it was accidentally included — always inject via env vars at runtime
 RUN rm -f .env
+
+# Create audit log directory writable by chainsage
+RUN mkdir -p /var/log/aegis && chown chainsage:chainsage /var/log/aegis
 
 USER chainsage
 

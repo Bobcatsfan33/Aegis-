@@ -53,6 +53,14 @@ jobs:
             'modules.security.fips',
             'modules.security.encryption',
             'modules.transport.mtls',
+            # v3.0.0: AI Security modules
+            'modules.discovery',
+            'modules.redteam',
+            'modules.guardrails',
+            'modules.policy',
+            'modules.telemetry',
+            'modules.connectors',
+            'modules.ai_security_routes',
           ]
           failed = []
           for m in mods:
@@ -63,6 +71,25 @@ jobs:
             sys.exit(1)
           print(f'All {len(mods)} modules imported successfully')
           "
+
+  # ── Unit Tests ──────────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run AegisAI test suite
+        run: pytest tests/ -v --tb=short
 
   # ── Dependency Vulnerability Scan ───────────────────────────────────────────
   dependency-scan:

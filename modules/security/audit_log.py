@@ -155,6 +155,7 @@ def log_event(
     *,
     tenant_id:      str = "_global_",
     subject:        str = "system",
+    actor:          str = "",
     source_ip:      str = "0.0.0.0",
     resource:       str = "",
     detail:         Optional[dict] = None,
@@ -177,6 +178,10 @@ def log_event(
         )
     """
     global _sequence_counter, _chain_head
+
+    # Allow 'actor' as alias for 'subject'
+    if actor and subject == "system":
+        subject = actor
 
     with _lock:
         _sequence_counter += 1

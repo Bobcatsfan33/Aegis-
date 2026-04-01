@@ -134,6 +134,9 @@ from modules.security.encryption import (
 )
 from modules.compliance.ssp_generator import AegisSspGenerator
 from modules.compliance.conmon import ConMonPipeline, check_conmon_config as _check_conmon_config
+from modules.ai_security_routes import (
+    ai_security_router, initialize_ai_security, shutdown_ai_security
+)
 from modules.scanners.network.flow_monitor import NetworkFlowMonitor, NETWORK_FLOWS_MAPPING
 from modules.scanners.host import DownloadScanner, DownloadWatcher, YaraEngine
 
@@ -169,6 +172,8 @@ _cors_origins: list[str] = [
     if o.strip()
 ]
 app.add_middleware(
+
+app.include_router(ai_security_router)
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_methods=["GET", "POST"],
@@ -271,6 +276,9 @@ async def startup_checks():
         AuditEventType.STARTUP,
         AuditOutcome.SUCCESS,
         detail={
+
+    # AegisAI v3.0: initialize AI security engines
+    await initialize_ai_security()
             "version": "2.10.0",
             "dev_mode": DEV_MODE,
             "dry_run": DRY_RUN,
@@ -392,7 +400,7 @@ def _run_scan(scan_id: str, initiated_by: str):
                 "error": "No scanners available. Check credentials and provider settings.",
             }
             log_event(
-                AuditEventType.SCAN_COMPLETE,
+                AuditEventType.SCAN_COMPLETED,
                 AuditOutcome.FAILURE,
                 actor=initiated_by,
                 detail={"scan_id": scan_id, "error": "no_scanners_available"},
@@ -427,7 +435,7 @@ def _run_scan(scan_id: str, initiated_by: str):
 
         # AU-2: audit successful scan completion
         log_event(
-            AuditEventType.SCAN_COMPLETE,
+            AuditEventType.SCAN_COMPLETED,
             AuditOutcome.SUCCESS,
             actor=initiated_by,
             detail={
@@ -461,7 +469,7 @@ def _run_scan(scan_id: str, initiated_by: str):
         logger.error(f"Scan {scan_id} failed with unhandled exception: {e}")
         scan_results[scan_id] = {"status": "error", "error": str(e)}
         log_event(
-            AuditEventType.SCAN_COMPLETE,
+            AuditEventType.SCAN_COMPLETED,
             AuditOutcome.FAILURE,
             actor=initiated_by,
             detail={"scan_id": scan_id, "error": str(e)},
@@ -1006,7 +1014,7 @@ async def encryption_status(
         provider_name = f"ERROR: {exc}"
 
     log_event(
-        AuditEventType.ACCESS,
+        AuditEventType.ACCESS_GRANTED,
         AuditOutcome.SUCCESS,
         detail={"resource": "/api/encryption/status", "provider": ENC_PROVIDER},
     )
@@ -1054,7 +1062,7 @@ async def rotate_encryption_keys(
         raise HTTPException(status_code=422, detail=f"Invalid table name: {table!r}")
 
     log_event(
-        AuditEventType.CONFIG_CHANGE,
+        AuditEventType.CONFIG_CHANGED,
         AuditOutcome.SUCCESS,
         detail={"action": "enc_rotation_started", "table": table, "columns": columns},
     )
@@ -1099,7 +1107,7 @@ async def get_ssp_json(
     NIST PL-2, CA-2, CA-6 — ADMIN+ only.
     """
     log_event(
-        AuditEventType.ACCESS,
+        AuditEventType.ACCESS_GRANTED,
         AuditOutcome.SUCCESS,
         detail={"resource": "/api/ssp", "format": "json"},
     )
@@ -1126,7 +1134,7 @@ async def get_ssp_csv(
     from fastapi.responses import StreamingResponse
 
     log_event(
-        AuditEventType.ACCESS,
+        AuditEventType.ACCESS_GRANTED,
         AuditOutcome.SUCCESS,
         detail={"resource": "/api/ssp/csv", "format": "csv"},
     )
@@ -1159,7 +1167,7 @@ async def get_ssp_markdown(
     from fastapi.responses import PlainTextResponse
 
     log_event(
-        AuditEventType.ACCESS,
+        AuditEventType.ACCESS_GRANTED,
         AuditOutcome.SUCCESS,
         detail={"resource": "/api/ssp/md", "format": "markdown"},
     )
@@ -1181,7 +1189,7 @@ def _run_conmon_pipeline(actor: str) -> None:
         _last_conmon_run = result.to_summary()
         _last_conmon_run["completed_by"] = actor
         log_event(
-            AuditEventType.ACCESS,
+            AuditEventType.ACCESS_GRANTED,
             AuditOutcome.SUCCESS,
             actor=actor,
             detail={"resource": "/api/conmon/run", "result": _last_conmon_run},
@@ -1196,7 +1204,7 @@ def _run_conmon_pipeline(actor: str) -> None:
     except Exception as exc:
         _last_conmon_run = {"status": "error", "error": str(exc), "completed_by": actor}
         log_event(
-            AuditEventType.ACCESS,
+            AuditEventType.ACCESS_GRANTED,
             AuditOutcome.FAILURE,
             actor=actor,
             detail={"resource": "/api/conmon/run", "error": str(exc)},
@@ -1223,7 +1231,7 @@ async def run_conmon(
     actor = caller.get("sub", "unknown")
     run_id = str(uuid.uuid4())
     log_event(
-        AuditEventType.ACCESS,
+        AuditEventType.ACCESS_GRANTED,
         AuditOutcome.SUCCESS,
         actor=actor,
         detail={"resource": "/api/conmon/run", "run_id": run_id, "action": "queued"},
@@ -1250,7 +1258,7 @@ async def get_conmon_status(
     NIST CA-7 — ANALYST+ (read-only, no sensitive control data exposed).
     """
     log_event(
-        AuditEventType.ACCESS,
+        AuditEventType.ACCESS_GRANTED,
         AuditOutcome.SUCCESS,
         actor=caller.get("sub", "unknown"),
         detail={"resource": "/api/conmon/status"},
@@ -1359,7 +1367,7 @@ async def get_network_flows(
     NIST SI-4, CA-7 — ANALYST+ read access.
     """
     log_event(
-        AuditEventType.ACCESS,
+        AuditEventType.ACCESS_GRANTED,
         AuditOutcome.SUCCESS,
         actor=caller.get("sub", "unknown"),
         detail={"resource": "/api/network/flows"},
@@ -1396,7 +1404,7 @@ async def run_network_flow_scan(
     """
     actor = caller.get("sub", "unknown")
     log_event(
-        AuditEventType.ACCESS,
+        AuditEventType.ACCESS_GRANTED,
         AuditOutcome.SUCCESS,
         actor=actor,
         detail={"resource": "/api/network/scan"},
@@ -1411,7 +1419,7 @@ async def run_network_flow_scan(
                 {"@timestamp": finding.timestamp, **finding.to_dict()},
             )
     log_event(
-        AuditEventType.SCAN,
+        AuditEventType.SCAN_STARTED,
         AuditOutcome.SUCCESS,
         actor=actor,
         detail={"resource": "/api/network/scan", "findings": len(findings)},
@@ -1441,7 +1449,7 @@ async def run_host_scan(
     """
     actor = caller.get("sub", "unknown")
     log_event(
-        AuditEventType.ACCESS,
+        AuditEventType.ACCESS_GRANTED,
         AuditOutcome.SUCCESS,
         actor=actor,
         detail={"resource": "/api/host/scan"},
@@ -1459,7 +1467,7 @@ async def run_host_scan(
                 {"@timestamp": finding.timestamp, **finding.to_dict()},
             )
     log_event(
-        AuditEventType.SCAN,
+        AuditEventType.SCAN_STARTED,
         AuditOutcome.SUCCESS,
         actor=actor,
         detail={
@@ -1491,7 +1499,7 @@ async def scan_single_file(
     """
     actor = caller.get("sub", "unknown")
     log_event(
-        AuditEventType.ACCESS,
+        AuditEventType.ACCESS_GRANTED,
         AuditOutcome.SUCCESS,
         actor=actor,
         detail={"resource": "/api/host/scan/file", "file": file_path},
@@ -1520,7 +1528,7 @@ async def get_host_scanner_status(
     NIST SI-3, SI-7, CA-7 — ANALYST+.
     """
     log_event(
-        AuditEventType.ACCESS,
+        AuditEventType.ACCESS_GRANTED,
         AuditOutcome.SUCCESS,
         actor=caller.get("sub", "unknown"),
         detail={"resource": "/api/host/status"},

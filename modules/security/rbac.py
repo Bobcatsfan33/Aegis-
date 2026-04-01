@@ -115,7 +115,7 @@ def require_role(minimum_role: Role) -> Callable:
 def _get_tenant_ctx():
     """Import lazily to avoid circular imports."""
     from modules.tenants.middleware import get_tenant
-    return Depends(get_tenant)
+    return get_tenant()
 
 
 def _emit_audit(tenant, required_role: Role, granted: bool) -> None:

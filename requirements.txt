@@ -7,7 +7,7 @@
 fastapi==0.115.6
 uvicorn[standard]==0.32.1
 python-multipart==0.0.12
-starlette==1.0.0                # pinned separately — FastAPI transitive dep
+starlette==0.41.3               # pinned separately — FastAPI transitive dep (0.41.x required by fastapi 0.115.6)
 
 # ── JWT / OIDC ────────────────────────────────────────────────────────────────
 python-jose[cryptography]==3.3.0
@@ -42,6 +42,10 @@ s3transfer==0.10.4               # boto3 transitive dep — pinned to avoid drif
 
 # ── AI / LLM ──────────────────────────────────────────────────────────────────
 openai==1.57.4                   # works with Ollama, vLLM, Groq, LocalAI, etc.
+anthropic==0.45.0                # v3.0: Anthropic Claude connector
+
+# ── AI Telemetry (v3.0) ──────────────────────────────────────────────────────
+clickhouse-driver==0.2.9         # ClickHouse native protocol client
 
 # ── Search / Analytics ────────────────────────────────────────────────────────
 opensearch-py==2.7.1             # Apache 2.0 — recommended over Elastic

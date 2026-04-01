@@ -189,12 +189,12 @@ def create_index_pattern() -> bool:
         return True
 
     # Legacy endpoint (OpenSearch Dashboards < 2.11 / Kibana 7.x)
+    # Note: "overwrite" must only be in the query string, NOT in the body.
     legacy_body = {
         "attributes": {
             "title":         DATA_VIEW_PAT,
             "timeFieldName": "@timestamp",
         },
-        "overwrite": True,
     }
     resp = dash_post(
         f"/api/saved_objects/index-pattern/{DATA_VIEW_ID}?overwrite=true",
@@ -208,167 +208,243 @@ def create_index_pattern() -> bool:
     return False
 
 
-# ── Step 3: Dashboard ──────────────────────────────────────────────────────────
+# ── Step 3: Dashboard (OpenSearch Dashboards native visualizations) ───────────
 
-def _lens_vis(vis_id: str, title: str, vis_type: str, state: dict) -> dict:
+def _osd_vis(vis_id: str, title: str, vis_type: str, aggs: list,
+             params: dict, index_filter: str = "") -> dict:
+    """Build an OpenSearch Dashboards-native visualization saved object.
+
+    Uses the standard visState format supported by OpenSearch Dashboards 2.x.
+    vis_type: metric, pie, histogram, area, horizontal_bar, table, etc.
+    """
+    search_source = {"index": DATA_VIEW_ID, "query": {"query": "", "language": "kuery"}, "filter": []}
+    if index_filter:
+        search_source["query"]["query"] = index_filter
+
+    vis_state = {
+        "title": title,
+        "type": vis_type,
+        "aggs": aggs,
+        "params": params,
+    }
+
     return {
         "id":   vis_id,
-        "type": "lens",
+        "type": "visualization",
         "attributes": {
-            "title":             title,
-            "visualizationType": vis_type,
-            "state":             state,
-            "references": [{
-                "id":   DATA_VIEW_ID,
-                "name": "indexpattern-datasource-layer-layer0",
-                "type": "index-pattern",
-            }],
+            "title":       title,
+            "visState":    json.dumps(vis_state),
+            "uiStateJSON": "{}",
+            "description": "",
+            "kibanaSavedObjectMeta": {
+                "searchSourceJSON": json.dumps(search_source),
+            },
         },
         "references": [{
             "id":   DATA_VIEW_ID,
-            "name": "indexpattern-datasource-layer-layer0",
+            "name": "kibanaSavedObjectMeta.searchSourceJSON.index",
             "type": "index-pattern",
         }],
     }
 
 
 def _build_saved_objects() -> list:
-    """Build all Kibana / OpenSearch Dashboards Lens saved objects."""
+    """Build all OpenSearch Dashboards-native saved objects."""
 
-    def count_by_field(field: str, size: int = 10) -> dict:
-        return {"layers": {"layer0": {
-            "columnOrder": ["grp", "cnt"],
-            "columns": {
-                "grp": {
-                    "label": field, "dataType": "string",
-                    "operationType": "terms", "sourceField": field,
-                    "isBucketed": True,
-                    "params": {"size": size,
-                               "orderBy": {"type": "column", "columnId": "cnt"},
-                               "orderDirection": "desc"},
-                },
-                "cnt": {"label": "Count", "dataType": "number",
-                        "operationType": "count", "isBucketed": False},
+    # ── Metric: Total Findings ────────────────────────────────────────────────
+    total_findings = _osd_vis(
+        f"{PREFIX}-vis-total", "Total Findings", "metric",
+        aggs=[{"id": "1", "enabled": True, "type": "count", "params": {},
+               "schema": "metric"}],
+        params={
+            "addTooltip": True, "addLegend": False, "type": "metric",
+            "metric": {
+                "percentageMode": False, "colorSchema": "Green to Red",
+                "metricColorMode": "None", "useRanges": False,
+                "style": {"bgFill": "#000", "bgColor": False,
+                           "labelColor": False, "subText": "", "fontSize": 60},
             },
-            "incompleteColumns": {},
-            "indexPatternId": DATA_VIEW_ID,
-        }}}
+        },
+    )
 
-    def date_histogram() -> dict:
-        return {"layers": {"layer0": {
-            "columnOrder": ["date", "cnt"],
-            "columns": {
-                "date": {
-                    "label": "@timestamp", "dataType": "date",
-                    "operationType": "date_histogram", "sourceField": "@timestamp",
-                    "isBucketed": True, "params": {"interval": "auto"},
-                },
-                "cnt": {"label": "Count", "dataType": "number",
-                        "operationType": "count", "isBucketed": False},
+    # ── Metric: Critical Findings ─────────────────────────────────────────────
+    critical_findings = _osd_vis(
+        f"{PREFIX}-vis-critical", "Critical Findings", "metric",
+        aggs=[{"id": "1", "enabled": True, "type": "count", "params": {},
+               "schema": "metric"}],
+        params={
+            "addTooltip": True, "addLegend": False, "type": "metric",
+            "metric": {
+                "percentageMode": False, "colorSchema": "Green to Red",
+                "metricColorMode": "Background", "useRanges": True,
+                "colorsRange": [{"from": 0, "to": 1}, {"from": 1, "to": 1000}],
+                "style": {"bgFill": "#000", "bgColor": True,
+                           "labelColor": False, "subText": "", "fontSize": 60},
             },
-            "incompleteColumns": {},
-            "indexPatternId": DATA_VIEW_ID,
-        }}}
+        },
+        index_filter="severity:critical",
+    )
 
-    def metric_count(kuery: str = "") -> dict:
-        col: dict = {"label": "Count", "dataType": "number",
-                     "operationType": "count", "isBucketed": False}
-        if kuery:
-            col["filter"] = {"query": kuery, "language": "kuery"}
-        return {"layers": {"layer0": {
-            "columnOrder": ["cnt"], "columns": {"cnt": col},
-            "incompleteColumns": {}, "indexPatternId": DATA_VIEW_ID,
-        }}}
-
-    def success_rate() -> dict:
-        return {"layers": {"layer0": {
-            "columnOrder": ["total", "success", "pct"],
-            "columns": {
-                "total":   {"label": "Total", "dataType": "number",
-                            "operationType": "count", "isBucketed": False},
-                "success": {"label": "Successful", "dataType": "number",
-                            "operationType": "count", "isBucketed": False,
-                            "filter": {"query": "success:true", "language": "kuery"}},
-                "pct":     {"label": "Success %", "dataType": "number",
-                            "operationType": "formula", "isBucketed": False,
-                            "params": {"formula": "count(kql='success:true') / count() * 100",
-                                       "isFormulaBroken": False,
-                                       "format": {"id": "percent", "params": {"decimals": 1}}}},
+    # ── Metric: High Severity ─────────────────────────────────────────────────
+    high_findings = _osd_vis(
+        f"{PREFIX}-vis-high", "High Severity Findings", "metric",
+        aggs=[{"id": "1", "enabled": True, "type": "count", "params": {},
+               "schema": "metric"}],
+        params={
+            "addTooltip": True, "addLegend": False, "type": "metric",
+            "metric": {
+                "percentageMode": False, "colorSchema": "Green to Red",
+                "metricColorMode": "Background", "useRanges": True,
+                "colorsRange": [{"from": 0, "to": 1}, {"from": 1, "to": 1000}],
+                "style": {"bgFill": "#000", "bgColor": True,
+                           "labelColor": False, "subText": "", "fontSize": 60},
             },
-            "incompleteColumns": {},
-            "indexPatternId": DATA_VIEW_ID,
-        }}}
+        },
+        index_filter="severity:high",
+    )
 
-    objects = [
-        _lens_vis(f"{PREFIX}-vis-total",    "Total Findings",             "lnsMetric",
-                  {"datasourceStates": {"formBased": metric_count()},
-                   "visualization": {"layerId": "layer0", "layerType": "data", "metricAccessor": "cnt"},
-                   "query": {"query": f"_index:{PREFIX}-findings", "language": "kuery"}, "filters": []}),
-        _lens_vis(f"{PREFIX}-vis-critical", "Critical Findings",           "lnsMetric",
-                  {"datasourceStates": {"formBased": metric_count("severity:critical")},
-                   "visualization": {"layerId": "layer0", "layerType": "data",
-                                     "metricAccessor": "cnt", "color": "#D32F2F"},
-                   "query": {"query": f"_index:{PREFIX}-findings", "language": "kuery"}, "filters": []}),
-        _lens_vis(f"{PREFIX}-vis-high",     "High Severity Findings",      "lnsMetric",
-                  {"datasourceStates": {"formBased": metric_count("severity:high")},
-                   "visualization": {"layerId": "layer0", "layerType": "data",
-                                     "metricAccessor": "cnt", "color": "#F57C00"},
-                   "query": {"query": f"_index:{PREFIX}-findings", "language": "kuery"}, "filters": []}),
-        _lens_vis(f"{PREFIX}-vis-rem-rate", "Remediation Success Rate",    "lnsMetric",
-                  {"datasourceStates": {"formBased": success_rate()},
-                   "visualization": {"layerId": "layer0", "layerType": "data",
-                                     "metricAccessor": "pct", "color": "#1B5E20"},
-                   "query": {"query": f"_index:{PREFIX}-remediations", "language": "kuery"}, "filters": []}),
-        _lens_vis(f"{PREFIX}-vis-severity", "Findings by Severity",         "lnsPie",
-                  {"datasourceStates": {"formBased": count_by_field("severity", 6)},
-                   "visualization": {"shape": "donut", "layers": [{
-                       "layerId": "layer0", "layerType": "data",
-                       "primaryGroups": ["grp"], "metric": "cnt",
-                       "numberDisplay": "percent", "categoryDisplay": "default",
-                       "legendDisplay": "default"}]},
-                   "query": {"query": f"_index:{PREFIX}-findings", "language": "kuery"}, "filters": []}),
-        _lens_vis(f"{PREFIX}-vis-provider", "Findings by Cloud Provider",   "lnsXY",
-                  {"datasourceStates": {"formBased": count_by_field("provider", 10)},
-                   "visualization": {
-                       "legend": {"isVisible": True, "position": "right"},
-                       "preferredSeriesType": "bar",
-                       "layers": [{"layerId": "layer0", "layerType": "data",
-                                   "seriesType": "bar", "xAccessor": "grp", "accessors": ["cnt"]}]},
-                   "query": {"query": f"_index:{PREFIX}-findings", "language": "kuery"}, "filters": []}),
-        _lens_vis(f"{PREFIX}-vis-timeline", "Findings Over Time",           "lnsXY",
-                  {"datasourceStates": {"formBased": date_histogram()},
-                   "visualization": {
-                       "legend": {"isVisible": True, "position": "right"},
-                       "preferredSeriesType": "area",
-                       "layers": [{"layerId": "layer0", "layerType": "data",
-                                   "seriesType": "area", "xAccessor": "date", "accessors": ["cnt"]}]},
-                   "query": {"query": f"_index:{PREFIX}-findings", "language": "kuery"}, "filters": []}),
-        _lens_vis(f"{PREFIX}-vis-rtype",    "Findings by Resource Type",   "lnsXY",
-                  {"datasourceStates": {"formBased": count_by_field("resource_type", 15)},
-                   "visualization": {
-                       "legend": {"isVisible": True, "position": "right"},
-                       "preferredSeriesType": "bar_horizontal",
-                       "layers": [{"layerId": "layer0", "layerType": "data",
-                                   "seriesType": "bar_horizontal",
-                                   "xAccessor": "grp", "accessors": ["cnt"]}]},
-                   "query": {"query": f"_index:{PREFIX}-findings", "language": "kuery"}, "filters": []}),
-    ]
+    # ── Metric: Medium + Low ──────────────────────────────────────────────────
+    medium_low = _osd_vis(
+        f"{PREFIX}-vis-medlow", "Medium + Low Findings", "metric",
+        aggs=[{"id": "1", "enabled": True, "type": "count", "params": {},
+               "schema": "metric"}],
+        params={
+            "addTooltip": True, "addLegend": False, "type": "metric",
+            "metric": {
+                "percentageMode": False, "colorSchema": "Green to Red",
+                "metricColorMode": "None", "useRanges": False,
+                "style": {"bgFill": "#000", "bgColor": False,
+                           "labelColor": False, "subText": "", "fontSize": 60},
+            },
+        },
+        index_filter="severity:medium OR severity:low",
+    )
 
+    # ── Pie: Findings by Severity ─────────────────────────────────────────────
+    severity_pie = _osd_vis(
+        f"{PREFIX}-vis-severity", "Findings by Severity", "pie",
+        aggs=[
+            {"id": "1", "enabled": True, "type": "count", "params": {},
+             "schema": "metric"},
+            {"id": "2", "enabled": True, "type": "terms", "params": {
+                "field": "severity", "orderBy": "1", "order": "desc",
+                "size": 6, "otherBucket": False, "missingBucket": False,
+             }, "schema": "segment"},
+        ],
+        params={
+            "type": "pie", "addTooltip": True, "addLegend": True,
+            "legendPosition": "right", "isDonut": True,
+            "labels": {"show": True, "values": True, "last_level": True, "truncate": 100},
+        },
+    )
+
+    # ── Bar: Findings by Provider ─────────────────────────────────────────────
+    provider_bar = _osd_vis(
+        f"{PREFIX}-vis-provider", "Findings by Provider", "histogram",
+        aggs=[
+            {"id": "1", "enabled": True, "type": "count", "params": {},
+             "schema": "metric"},
+            {"id": "2", "enabled": True, "type": "terms", "params": {
+                "field": "provider", "orderBy": "1", "order": "desc",
+                "size": 10, "otherBucket": False, "missingBucket": False,
+             }, "schema": "segment"},
+        ],
+        params={
+            "type": "histogram", "addTooltip": True, "addLegend": True,
+            "legendPosition": "right", "addTimeMarker": False,
+            "categoryAxes": [{"id": "CategoryAxis-1", "type": "category",
+                              "position": "bottom", "show": True,
+                              "labels": {"show": True, "truncate": 100},
+                              "title": {}}],
+            "valueAxes": [{"id": "ValueAxis-1", "name": "LeftAxis-1",
+                           "type": "value", "position": "left", "show": True,
+                           "labels": {"show": True}, "title": {"text": "Count"}}],
+            "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
+                              "data": {"label": "Count", "id": "1"},
+                              "valueAxis": "ValueAxis-1"}],
+            "grid": {"categoryLines": False},
+        },
+    )
+
+    # ── Area: Findings Over Time ──────────────────────────────────────────────
+    timeline_area = _osd_vis(
+        f"{PREFIX}-vis-timeline", "Findings Over Time", "area",
+        aggs=[
+            {"id": "1", "enabled": True, "type": "count", "params": {},
+             "schema": "metric"},
+            {"id": "2", "enabled": True, "type": "date_histogram", "params": {
+                "field": "@timestamp", "useNormalizedOpenSearchInterval": True,
+                "scaleMetricValues": False, "interval": "auto",
+                "drop_partials": False, "min_doc_count": 1,
+                "extended_bounds": {},
+             }, "schema": "segment"},
+        ],
+        params={
+            "type": "area", "addTooltip": True, "addLegend": True,
+            "legendPosition": "right", "addTimeMarker": False,
+            "categoryAxes": [{"id": "CategoryAxis-1", "type": "category",
+                              "position": "bottom", "show": True,
+                              "labels": {"show": True, "truncate": 100},
+                              "title": {}}],
+            "valueAxes": [{"id": "ValueAxis-1", "name": "LeftAxis-1",
+                           "type": "value", "position": "left", "show": True,
+                           "labels": {"show": True}, "title": {"text": "Count"}}],
+            "seriesParams": [{"show": True, "type": "area", "mode": "stacked",
+                              "data": {"label": "Count", "id": "1"},
+                              "valueAxis": "ValueAxis-1",
+                              "drawLinesBetweenPoints": True,
+                              "lineWidth": 2, "showCircles": True}],
+            "grid": {"categoryLines": False},
+        },
+    )
+
+    # ── Horizontal bar: Findings by Resource Type ─────────────────────────────
+    rtype_bar = _osd_vis(
+        f"{PREFIX}-vis-rtype", "Findings by Resource Type", "horizontal_bar",
+        aggs=[
+            {"id": "1", "enabled": True, "type": "count", "params": {},
+             "schema": "metric"},
+            {"id": "2", "enabled": True, "type": "terms", "params": {
+                "field": "resource_type", "orderBy": "1", "order": "desc",
+                "size": 15, "otherBucket": False, "missingBucket": False,
+             }, "schema": "segment"},
+        ],
+        params={
+            "type": "horizontal_bar", "addTooltip": True, "addLegend": True,
+            "legendPosition": "right",
+            "categoryAxes": [{"id": "CategoryAxis-1", "type": "category",
+                              "position": "left", "show": True,
+                              "labels": {"show": True, "truncate": 100},
+                              "title": {}}],
+            "valueAxes": [{"id": "ValueAxis-1", "name": "BottomAxis-1",
+                           "type": "value", "position": "bottom", "show": True,
+                           "labels": {"show": True}, "title": {"text": "Count"}}],
+            "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
+                              "data": {"label": "Count", "id": "1"},
+                              "valueAxis": "ValueAxis-1"}],
+            "grid": {"categoryLines": False},
+        },
+    )
+
+    objects = [total_findings, critical_findings, high_findings, medium_low,
+               severity_pie, provider_bar, timeline_area, rtype_bar]
+
+    # ── Dashboard shell ───────────────────────────────────────────────────────
+    # Use the legacy panel format with direct 'id' references.
+    # This avoids the panelRefName migration bug in OpenSearch Dashboards 2.x.
     vis_ids = [o["id"] for o in objects]
     panels = [
-        {"panelIndex": str(i+1), "type": "lens", "panelRefName": f"panel_{i+1}",
+        {"version": "2.13.0",
+         "panelIndex": str(i+1), "type": "visualization",
+         "id": vid,
+         "embeddableConfig": {},
          "gridData": {"x": x, "y": y, "w": w, "h": h, "i": str(i+1)}}
-        for i, (x, y, w, h) in enumerate([
-            (0,  0,  6, 4), (6,  0,  6, 4), (12, 0,  6, 4), (18, 0,  6, 4),
-            (0,  4, 12, 15), (12, 4, 12, 15),
-            (0, 19, 24, 12),
-            (0, 31, 24, 15),
-        ])
-    ]
-
-    references = [
-        {"id": vid, "name": f"panel_{i+1}", "type": "lens"}
-        for i, vid in enumerate(vis_ids)
+        for i, (vid, (x, y, w, h)) in enumerate(zip(vis_ids, [
+            (0,  0,  6, 5),  (6,  0,  6, 5),  (12, 0,  6, 5),  (18, 0,  6, 5),
+            (0,  5, 12, 12), (12, 5, 12, 12),
+            (0, 17, 24, 10),
+            (0, 27, 24, 12),
+        ]))
     ]
 
     objects.append({
@@ -384,7 +460,7 @@ def _build_saved_objects() -> list:
                 "searchSourceJSON": json.dumps({"query": {"query": "", "language": "kuery"}, "filter": []})
             },
         },
-        "references": references,
+        "references": [],
     })
     return objects
 

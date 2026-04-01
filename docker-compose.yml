@@ -3,9 +3,10 @@ version: "3.9"
 # ── Aegis — full stack ──────────────────────────────────────────────────
 #
 #  Services:
-#    aegis      FastAPI app  →  http://localhost:8000
-#    opensearch       OpenSearch (Apache 2.0 search/analytics backend)
-#    dashboards       OpenSearch Dashboards  →  http://localhost:5601
+#    aegis        FastAPI app  →  http://localhost:8000
+#    opensearch   OpenSearch (Apache 2.0 search/analytics backend)
+#    dashboards   OpenSearch Dashboards  →  http://localhost:5601
+#    clickhouse   ClickHouse (v3.0 AI telemetry analytics)  →  http://localhost:8123
 #
 #  Quick start:
 #    1. cp .env.example .env  &&  vim .env   (add your OPENAI_API_KEY)
@@ -41,6 +42,9 @@ services:
       ELASTICSEARCH_URL: http://opensearch:9200
       ELASTICSEARCH_ENABLED: "true"
       DASHBOARD_URL: http://dashboards:5601
+      # v3.0: ClickHouse for AI telemetry
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "9000"
 
     # ── Capabilities ──────────────────────────────────────────────────────────
     # NET_ADMIN + SYS_PTRACE are required for the network remediation agent
@@ -64,6 +68,8 @@ services:
     depends_on:
       opensearch:
         condition: service_healthy
+      clickhouse:
+        condition: service_healthy
 
     networks:
       - chainsage-net
@@ -75,6 +81,41 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+
+
+  # ── ClickHouse (AI Telemetry — v3.0) ───────────────────────────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: clickhouse
+    restart: unless-stopped
+
+    environment:
+      - CLICKHOUSE_DB=aegis
+      - CLICKHOUSE_USER=aegis
+      - CLICKHOUSE_PASSWORD=aegis_telemetry
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+
+    ports:
+      - "8123:8123"    # HTTP interface
+      - "9001:9000"    # Native TCP (host 9001 to avoid conflict with OpenSearch)
+
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+
+    networks:
+      - chainsage-net
+
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
 
 
   # ── OpenSearch (Apache 2.0) ──────────────────────────────────────────────────
@@ -150,6 +191,8 @@ services:
 # ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   opensearch-data:
+    driver: local
+  clickhouse-data:
     driver: local
   reports:
     driver: local
