@@ -173,7 +173,6 @@ _cors_origins: list[str] = [
 ]
 app.add_middleware(
 
-app.include_router(ai_security_router)
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_methods=["GET", "POST"],
@@ -181,6 +180,8 @@ app.include_router(ai_security_router)
                    "X-Client-Cert", "X-Forwarded-Client-Cert"],
     allow_credentials=False,
 )
+
+app.include_router(ai_security_router)
 
 # ── In-memory scan store — replace with Redis for multi-replica deployments ───
 
@@ -271,14 +272,15 @@ async def startup_checks():
     except Exception as exc:
         logger.error("Aegis ConMon config error: %s", exc)
 
+
+    # AegisAI v3.0: initialize AI security engines
+    await initialize_ai_security()
+
     # AU-2 / AU-12: emit auditable startup event
     log_event(
         AuditEventType.STARTUP,
         AuditOutcome.SUCCESS,
         detail={
-
-    # AegisAI v3.0: initialize AI security engines
-    await initialize_ai_security()
             "version": "2.10.0",
             "dev_mode": DEV_MODE,
             "dry_run": DRY_RUN,
