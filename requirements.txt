@@ -48,7 +48,7 @@ anthropic==0.45.0                # v3.0: Anthropic Claude connector
 clickhouse-driver==0.2.9         # ClickHouse native protocol client
 
 # ── Search / Analytics ────────────────────────────────────────────────────────
-opensearch-py==2.7.1             # Apache 2.0 — recommended over Elastic
+opensearch-py==3.1.0             # Apache 2.0 — recommended over Elastic
 # elasticsearch==8.17.0          # Elastic License 2.0 fallback (uncomment if needed)
 
 # ── Network scanning (requires nmap binary: apt install nmap) ─────────────────
