@@ -26,14 +26,14 @@ from config import (
     AZURE_ENABLED,
     AZURE_SUBSCRIPTION_ID,
     DRY_RUN,
-    ELASTICSEARCH_ENABLED,
+    CLICKHOUSE_ANALYTICS_ENABLED,
     GCP_ENABLED,
     GCP_PROJECT_ID,
     NETWORK_SCAN_ENABLED,
     NETWORK_SCAN_TARGETS,
 )
 from modules.agents.orchestrator import AIOrchestrator
-from modules.analytics.elastic import ElasticIndexer
+from modules.analytics.clickhouse_indexer import ClickHouseIndexer
 from modules.scanners.base import Finding
 
 logging.basicConfig(
@@ -230,11 +230,11 @@ def main():
         f.write(report)
     print(f"\nReport saved to {report_path}")
 
-    # ── Ship to Elasticsearch / Kibana ─────────────────────────────────────────
-    if ELASTICSEARCH_ENABLED:
+    # ── Ship to ClickHouse ────────────────────────────────────────────────────
+    if CLICKHOUSE_ANALYTICS_ENABLED:
         import uuid as _uuid
         scan_id = str(_uuid.uuid4())
-        indexer = ElasticIndexer()
+        indexer = ClickHouseIndexer()
         if indexer.is_available():
             by_sev: dict = {}
             for f in all_findings:
@@ -257,11 +257,11 @@ def main():
                 duration_seconds=duration,
             )
             print(
-                f"\nElasticsearch: indexed {indexed['findings']} findings, "
-                f"{indexed['remediations']} remediations → view in Kibana"
+                f"\nClickHouse: indexed {indexed['findings']} findings, "
+                f"{indexed['remediations']} remediations → view in dashboard"
             )
         else:
-            print("\nElasticsearch enabled but unreachable — results not indexed.")
+            print("\nClickHouse analytics enabled but unreachable — results not indexed.")
 
 
 if __name__ == "__main__":

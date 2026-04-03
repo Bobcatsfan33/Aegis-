@@ -243,3 +243,318 @@ class ComplianceReportGenerator:
             metadata=metadata,
             generated_at=generated_at,
         )
+
+
+# ── Multi-Framework ComplianceReporter ────────────────────────────────────────
+
+# Framework control families / categories
+_FRAMEWORK_CONTROLS: Dict[str, Dict[str, List[str]]] = {
+    "NIST_800_53": {
+        "Access Control":        ["AC-1",  "AC-2",  "AC-3",  "AC-5",  "AC-6",  "AC-17"],
+        "Audit & Accountability": ["AU-2",  "AU-6",  "AU-9",  "AU-12"],
+        "Configuration Mgmt":    ["CM-2",  "CM-6",  "CM-7",  "CM-8"],
+        "Contingency Planning":  ["CP-9",  "CP-10"],
+        "Identification & Auth": ["IA-2",  "IA-3",  "IA-5",  "IA-8"],
+        "Incident Response":     ["IR-4",  "IR-5",  "IR-6"],
+        "Risk Assessment":       ["RA-3",  "RA-5",  "RA-7"],
+        "System & Comm Prot":    ["SC-7",  "SC-8",  "SC-12", "SC-13", "SC-28"],
+        "System & Info Integ":   ["SI-2",  "SI-3",  "SI-10"],
+    },
+    "NIST_AI_RMF": {
+        "Govern":   ["GOVERN-1", "GOVERN-2", "GOVERN-3", "GOVERN-4", "GOVERN-5", "GOVERN-6"],
+        "Map":      ["MAP-1",    "MAP-2",    "MAP-3",    "MAP-4",    "MAP-5"],
+        "Measure":  ["MEASURE-1","MEASURE-2","MEASURE-3","MEASURE-4"],
+        "Manage":   ["MANAGE-1", "MANAGE-2", "MANAGE-3", "MANAGE-4"],
+    },
+    "OWASP_LLM": {
+        "Prompt Injection":       ["LLM01"],
+        "Insecure Output Handling":["LLM02"],
+        "Training Data Poisoning":["LLM03"],
+        "Model Denial of Service":["LLM04"],
+        "Supply Chain Vulns":     ["LLM05"],
+        "Sensitive Info Disclosure":["LLM06"],
+        "Insecure Plugin Design": ["LLM07"],
+        "Excessive Agency":       ["LLM08"],
+        "Overreliance":           ["LLM09"],
+        "Model Theft":            ["LLM10"],
+    },
+    "EU_AI_ACT": {
+        "Risk Management":        ["AIA-9",  "AIA-10"],
+        "Data Governance":        ["AIA-10", "AIA-17"],
+        "Technical Documentation":["AIA-11"],
+        "Transparency":           ["AIA-13"],
+        "Human Oversight":        ["AIA-14"],
+        "Accuracy & Robustness":  ["AIA-15"],
+        "Cybersecurity":          ["AIA-15", "AIA-16"],
+    },
+}
+
+# Maps finding severity → compliance impact label
+_IMPACT_LABEL: Dict[str, str] = {
+    "critical": "Critical",
+    "high":     "High",
+    "medium":   "Medium",
+    "low":      "Low",
+    "info":     "Informational",
+}
+
+# Framework display names
+_FRAMEWORK_NAMES: Dict[str, str] = {
+    "NIST_800_53":  "NIST 800-53 Rev5",
+    "NIST_AI_RMF":  "NIST AI RMF",
+    "OWASP_LLM":    "OWASP LLM Top 10",
+    "EU_AI_ACT":    "EU AI Act",
+}
+
+
+@dataclass
+class FrameworkSection:
+    """One control family / category within a framework."""
+    family: str
+    controls: List[str]
+    findings: List[Any] = field(default_factory=list)
+
+    @property
+    def compliant(self) -> bool:
+        return len(self.findings) == 0
+
+    @property
+    def max_severity(self) -> str:
+        order = ["critical", "high", "medium", "low", "info"]
+        for sev in order:
+            if any(getattr(f, "severity", "info") == sev for f in self.findings):
+                return sev
+        return "info"
+
+    def to_dict(self) -> dict:
+        return {
+            "family":        self.family,
+            "controls":      self.controls,
+            "compliant":     self.compliant,
+            "finding_count": len(self.findings),
+            "max_severity":  self.max_severity if self.findings else None,
+        }
+
+
+@dataclass
+class MultiFrameworkReport:
+    """
+    Compliance report spanning one or more frameworks.
+
+    Attributes:
+        framework        — Framework key (e.g. ``"NIST_800_53"``)
+        framework_name   — Human-readable framework name
+        overall_score    — 0-100 compliance score
+        sections         — Per-family control gap analysis
+        findings_summary — {severity: count} across all findings
+        tenant_id        — Tenant this report belongs to
+        metadata         — Caller-supplied extras
+        generated_at     — ISO-8601 UTC timestamp
+    """
+    framework: str
+    framework_name: str
+    overall_score: float
+    sections: List[FrameworkSection]
+    findings_summary: Dict[str, int]
+    tenant_id: str
+    metadata: Dict[str, Any]
+    generated_at: str
+
+    def to_dict(self) -> dict:
+        return {
+            "framework":        self.framework,
+            "framework_name":   self.framework_name,
+            "overall_score":    round(self.overall_score, 1),
+            "sections":         [s.to_dict() for s in self.sections],
+            "findings_summary": self.findings_summary,
+            "tenant_id":        self.tenant_id,
+            "metadata":         self.metadata,
+            "generated_at":     self.generated_at,
+        }
+
+    def to_json(self) -> str:
+        import json
+        return json.dumps(self.to_dict(), indent=2)
+
+
+class ComplianceReporter:
+    """
+    Multi-framework compliance reporter.
+
+    Generates structured compliance reports for:
+      • NIST 800-53 Rev5
+      • NIST AI RMF
+      • OWASP LLM Top 10
+      • EU AI Act
+
+    Takes AI security events / findings as input; produces
+    :class:`MultiFrameworkReport` objects suitable for JSON export,
+    dashboard display, and eMASS / SSP ingestion.
+
+    Usage::
+
+        reporter = ComplianceReporter(tenant_id="org-123")
+        report = reporter.generate(events, framework="NIST_AI_RMF")
+        print(report.overall_score)
+        print(report.to_json())
+    """
+
+    SUPPORTED_FRAMEWORKS = list(_FRAMEWORK_CONTROLS.keys())
+
+    def __init__(self, tenant_id: str = "default") -> None:
+        self.tenant_id = tenant_id
+
+    # ── Core generate method ──────────────────────────────────────────────────
+
+    def generate(
+        self,
+        events: List[Any],
+        framework: str = "NIST_800_53",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> MultiFrameworkReport:
+        """
+        Generate a compliance report for *framework* from *events*.
+
+        Args:
+            events:     List of dicts or objects with at least:
+                        ``severity`` (str), ``event_type`` (str),
+                        ``controls`` (List[str]) or ``nist_controls`` (List[str]).
+            framework:  One of ``SUPPORTED_FRAMEWORKS``.
+            metadata:   Optional dict merged into the report.
+
+        Returns:
+            :class:`MultiFrameworkReport`
+
+        Raises:
+            ValueError: If *framework* is not supported.
+        """
+        if framework not in _FRAMEWORK_CONTROLS:
+            raise ValueError(
+                f"Unsupported framework '{framework}'. "
+                f"Choose from: {self.SUPPORTED_FRAMEWORKS}"
+            )
+
+        generated_at = datetime.now(timezone.utc).isoformat()
+        metadata = metadata or {}
+        families = _FRAMEWORK_CONTROLS[framework]
+
+        # Build control → findings index
+        ctrl_findings: Dict[str, List[Any]] = defaultdict(list)
+        for event in events:
+            # Support both Finding objects and plain dicts
+            if isinstance(event, dict):
+                controls = (
+                    event.get("controls")
+                    or event.get("nist_controls")
+                    or event.get("ai_controls")
+                    or []
+                )
+                sev = event.get("severity", "info")
+            else:
+                controls = (
+                    getattr(event, "controls", None)
+                    or getattr(event, "nist_controls", None)
+                    or getattr(event, "ai_controls", None)
+                    or []
+                )
+                sev = getattr(event, "severity", "info")
+
+            for ctrl in controls:
+                ctrl_findings[ctrl].append(event)
+
+        # Build sections
+        sections: List[FrameworkSection] = []
+        for family, controls in families.items():
+            family_findings: List[Any] = []
+            for ctrl in controls:
+                family_findings.extend(ctrl_findings.get(ctrl, []))
+            # Deduplicate findings in family
+            seen_ids: set = set()
+            unique: List[Any] = []
+            for f in family_findings:
+                fid = id(f)
+                if fid not in seen_ids:
+                    seen_ids.add(fid)
+                    unique.append(f)
+            sections.append(FrameworkSection(
+                family=family,
+                controls=controls,
+                findings=unique,
+            ))
+
+        # Score: percent of families with zero findings
+        if not sections:
+            score = 100.0
+        else:
+            # Weight by severity — fewer critical gaps = higher score
+            penalty = 0.0
+            for s in sections:
+                if not s.compliant:
+                    w = _SEVERITY_WEIGHT.get(s.max_severity, 2)
+                    penalty += w
+            max_penalty = len(sections) * _SEVERITY_WEIGHT["critical"]
+            score = max(0.0, 100.0 - (penalty / max_penalty * 100.0))
+
+        # Findings summary
+        findings_summary: Dict[str, int] = defaultdict(int)
+        for event in events:
+            sev = (
+                event.get("severity", "info")
+                if isinstance(event, dict)
+                else getattr(event, "severity", "info")
+            )
+            findings_summary[sev.lower()] += 1
+
+        return MultiFrameworkReport(
+            framework=framework,
+            framework_name=_FRAMEWORK_NAMES[framework],
+            overall_score=round(score, 1),
+            sections=sections,
+            findings_summary=dict(findings_summary),
+            tenant_id=self.tenant_id,
+            metadata=metadata,
+            generated_at=generated_at,
+        )
+
+    def generate_all_frameworks(
+        self,
+        events: List[Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, MultiFrameworkReport]:
+        """
+        Generate reports for **all** supported frameworks.
+
+        Returns a dict of ``{framework_key: MultiFrameworkReport}``.
+        """
+        return {
+            fw: self.generate(events, framework=fw, metadata=metadata)
+            for fw in self.SUPPORTED_FRAMEWORKS
+        }
+
+    def summary(
+        self,
+        events: List[Any],
+        frameworks: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Compact summary across multiple frameworks.
+
+        Returns a dict suitable for a dashboard panel:
+        ``{framework_name: {score, sections_failing}}``.
+        """
+        if frameworks is None:
+            frameworks = self.SUPPORTED_FRAMEWORKS
+        out: Dict[str, Any] = {}
+        for fw in frameworks:
+            try:
+                report = self.generate(events, framework=fw)
+                failing = sum(1 for s in report.sections if not s.compliant)
+                out[report.framework_name] = {
+                    "score":           report.overall_score,
+                    "sections_total":  len(report.sections),
+                    "sections_failing": failing,
+                    "findings_total":  sum(report.findings_summary.values()),
+                }
+            except ValueError:
+                pass
+        return out

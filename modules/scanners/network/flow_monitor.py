@@ -11,9 +11,8 @@ root privileges required) and enriches each flow with:
   • MITRE ATT&CK technique tagging
   • NIST 800-53 Rev5 control references (SI-4, CA-7, AU-2, AU-12)
 
-Results are shipped to Elasticsearch / OpenSearch via the existing
-ElasticIndexer *and* are returned as Finding objects so the compliance
-report generator can score them.
+Results are shipped to ClickHouse via the ClickHouseIndexer *and* are
+returned as Finding objects so the compliance report generator can score them.
 
 Usage (standalone):
     from modules.scanners.network.flow_monitor import NetworkFlowMonitor
@@ -141,9 +140,9 @@ class NetworkFlowMonitor(BaseScanner):
 
     provider = "network"
 
-    def __init__(self, interval: float = 10.0, elastic_indexer=None):
+    def __init__(self, interval: float = 10.0, indexer=None, elastic_indexer=None):
         self._interval = interval
-        self._elastic = elastic_indexer          # Optional[ElasticIndexer]
+        self._indexer = indexer or elastic_indexer  # Optional[ClickHouseIndexer]
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
@@ -367,39 +366,12 @@ class NetworkFlowMonitor(BaseScanner):
         )
 
     def _index_alert(self, flow: NetworkFlow):
-        if not self._elastic:
+        if not self._indexer:
             return
         try:
-            self._elastic._index(
-                f"{self._elastic.prefix}-network-alerts",
+            self._indexer._index(
+                "network_alerts",
                 flow.to_dict(),
             )
         except Exception as exc:
             logger.error(f"Failed to index network alert: {exc}")
-
-
-# ── Elasticsearch index mapping for network flows ─────────────────────────────
-
-NETWORK_FLOWS_MAPPING = {
-    "mappings": {
-        "properties": {
-            "@timestamp":      {"type": "date"},
-            "src_ip":          {"type": "ip"},
-            "src_port":        {"type": "integer"},
-            "dst_ip":          {"type": "ip"},
-            "dst_port":        {"type": "integer"},
-            "protocol":        {"type": "keyword"},
-            "state":           {"type": "keyword"},
-            "pid":             {"type": "integer"},
-            "process_name":    {"type": "keyword"},
-            "threat_score":    {"type": "integer"},
-            "ioc_match":       {"type": "keyword"},
-            "mitre_technique": {"type": "keyword"},
-            "mitre_tactic":    {"type": "keyword"},
-            "nist_controls":   {"type": "keyword"},
-            "alert":           {"type": "boolean"},
-            "alert_reason":    {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
-        }
-    },
-    "settings": {"number_of_shards": 1, "number_of_replicas": 1},
-}

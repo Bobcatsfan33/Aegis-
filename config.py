@@ -46,7 +46,7 @@ NETWORK_SCAN_TARGETS: list[str] = [
 # ── Live network flow monitoring (v2.11) ──────────────────────────────
 # Requires: pip install psutil
 # NETWORK_FLOW_MONITOR_ENABLED=true starts a background thread that captures
-# live connections and ships IOC-enriched alerts to Elasticsearch.
+# live connections and ships IOC-enriched alerts to ClickHouse.
 NETWORK_FLOW_MONITOR_ENABLED: bool = os.getenv("NETWORK_FLOW_MONITOR_ENABLED", "false").lower() == "true"
 NETWORK_FLOW_MONITOR_INTERVAL: float = float(os.getenv("NETWORK_FLOW_MONITOR_INTERVAL", "10"))
 
@@ -93,24 +93,22 @@ SIEM_SYSLOG_PROTOCOL: str = os.getenv("SIEM_SYSLOG_PROTOCOL", "udp")  # udp | tc
 # Set to true to send CEF instead of plain RFC 5424 syslog when SIEM_SYSLOG_HOST is set.
 SIEM_CEF_ENABLED: bool = os.getenv("SIEM_CEF_ENABLED", "false").lower() == "true"
 
-# ── Search / Analytics Backend ────────────────────────────────────────────────
-# SEARCH_BACKEND: "opensearch" (recommended, Apache 2.0) or "elasticsearch" (Elastic License)
-# Requires: pip install opensearch-py   (for OpenSearch)
-#        OR pip install elasticsearch   (for Elasticsearch)
-SEARCH_BACKEND: str = os.getenv("SEARCH_BACKEND", "opensearch")
-ELASTICSEARCH_ENABLED: bool = os.getenv("ELASTICSEARCH_ENABLED", "false").lower() == "true"
-ELASTICSEARCH_URL: str = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
-ELASTICSEARCH_API_KEY: str = os.getenv("ELASTICSEARCH_API_KEY", "")
-ELASTICSEARCH_USERNAME: str = os.getenv("ELASTICSEARCH_USERNAME", "")
-ELASTICSEARCH_PASSWORD: str = os.getenv("ELASTICSEARCH_PASSWORD", "")
+# ── ClickHouse Analytics Backend ──────────────────────────────────────────────
+# Unified analytics via ClickHouse — replaces Elasticsearch/OpenSearch.
+# Used for CSPM findings indexing, AI telemetry, and cross-product analytics.
+CLICKHOUSE_HOST: str = os.getenv("CLICKHOUSE_HOST", "localhost")
+CLICKHOUSE_PORT: int = int(os.getenv("CLICKHOUSE_PORT", "9000"))
+CLICKHOUSE_DB: str = os.getenv("CLICKHOUSE_DB", "aegis")
+CLICKHOUSE_ANALYTICS_ENABLED: bool = os.getenv("CLICKHOUSE_ANALYTICS_ENABLED", "true").lower() == "true"
+
+# Legacy aliases — kept so existing code doesn't break during migration
+ELASTICSEARCH_ENABLED: bool = CLICKHOUSE_ANALYTICS_ENABLED  # maps to CH now
 ELASTICSEARCH_INDEX_PREFIX: str = os.getenv("ELASTICSEARCH_INDEX_PREFIX", "aegis")
 
 # ── Dashboard Backend ─────────────────────────────────────────────────────────
-# DASHBOARD_BACKEND: "opensearch" (OpenSearch Dashboards, Apache 2.0) or "kibana"
-# DASHBOARD_URL: base URL for the dashboard (OpenSearch Dashboards or Kibana)
-DASHBOARD_BACKEND: str = os.getenv("DASHBOARD_BACKEND", "opensearch")
-DASHBOARD_URL: str = os.getenv("DASHBOARD_URL", "http://localhost:5601")
-DASHBOARD_API_KEY: str = os.getenv("DASHBOARD_API_KEY", "")
+# Custom ClickHouse-backed dashboard served by Aegis itself.
+# DASHBOARD_PORT: port the built-in dashboard server listens on (default 5601)
+DASHBOARD_PORT: int = int(os.getenv("DASHBOARD_PORT", "5601"))
 
 # ── Dev / Testing ─────────────────────────────────────────────────────────────
 # DEV_MODE=true disables OIDC JWT verification so you can call the API without

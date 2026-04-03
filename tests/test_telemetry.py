@@ -354,18 +354,24 @@ class TestAnalyticsQueries:
     """Tests for pre-built analytics queries."""
 
     def test_all_8_queries_exist(self):
-        expected = {
+        # Original 8 core queries must always be present; directive may add more
+        required = {
             "events_per_hour", "risk_distribution", "top_models",
             "provider_breakdown", "guardrail_violations", "redteam_success_rate",
             "daily_cost", "policy_compliance",
         }
-        assert set(ANALYTICS_QUERIES.keys()) == expected
+        assert required.issubset(set(ANALYTICS_QUERIES.keys())), (
+            f"Missing required queries: {required - set(ANALYTICS_QUERIES.keys())}"
+        )
 
     def test_query_sql_not_empty(self):
         for name, sql in ANALYTICS_QUERIES.items():
             assert sql.strip(), f"Query '{name}' is empty"
             assert "SELECT" in sql.upper()
-            assert "FROM ai_events" in sql
+            # Queries may read from materialized views or ai_events directly
+            assert any(kw in sql.upper() for kw in ("FROM AI_EVENTS", "FROM AI_", "FROM CSPM_")), (
+                f"Query '{name}' does not appear to read from an Aegis table"
+            )
 
     def test_query_returns_empty_without_clickhouse(self, engine_no_ch):
         result = engine_no_ch.query("events_per_hour")

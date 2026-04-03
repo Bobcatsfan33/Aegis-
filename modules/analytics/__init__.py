@@ -1,3 +1,6 @@
-from .elastic import ElasticIndexer
+from .clickhouse_indexer import ClickHouseIndexer, get_indexer
 
-__all__ = ["ElasticIndexer"]
+# Legacy alias for backward compatibility during migration
+ElasticIndexer = ClickHouseIndexer
+
+__all__ = ["ClickHouseIndexer", "get_indexer", "ElasticIndexer"]

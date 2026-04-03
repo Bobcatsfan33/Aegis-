@@ -31,6 +31,7 @@ from pydantic import BaseModel
 
 from modules.security.rbac import Role, require_role
 from modules.security.audit_log import AuditEventType, AuditOutcome, log_event
+from modules.tenants.middleware import get_tenant_context, TenantContext
 
 from modules.discovery import DiscoveryEngine, AIAsset
 from modules.redteam import RedTeamEngine, AttackResult, AttackCategory
@@ -129,6 +130,7 @@ class PolicyEvalRequest(BaseModel):
 @ai_security_router.post("/discover", dependencies=[Depends(require_role(Role.ANALYST))])
 async def discover_assets(req: DiscoverRequest):
     """Run AI asset discovery scan."""
+    tenant = get_tenant_context()
     engine = DiscoveryEngine(
         scan_env=req.scan_env,
         scan_network=req.scan_network,
@@ -142,17 +144,22 @@ async def discover_assets(req: DiscoverRequest):
         event_type=EventType.DISCOVERY,
         source="discovery_engine",
         severity="info",
-        data={"asset_count": len(assets)},
+        data={"asset_count": len(assets), "tenant_id": tenant.tenant_id},
     ))
 
     # Audit log
     log_event(
         AuditEventType.SCAN,
         AuditOutcome.SUCCESS,
-        detail={"type": "ai_discovery", "assets_found": len(assets)},
+        detail={
+            "type": "ai_discovery",
+            "assets_found": len(assets),
+            "tenant_id": tenant.tenant_id,
+        },
     )
 
     return {
+        "tenant_id": tenant.tenant_id,
         "assets": [a.to_dict() for a in assets],
         "summary": engine.summary(assets),
     }
@@ -161,8 +168,10 @@ async def discover_assets(req: DiscoverRequest):
 @ai_security_router.get("/assets", dependencies=[Depends(require_role(Role.ANALYST))])
 async def list_assets():
     """Run a quick discovery and return asset inventory."""
+    tenant = get_tenant_context()
     assets = _discovery_engine.scan()
     return {
+        "tenant_id": tenant.tenant_id,
         "assets": [a.to_dict() for a in assets],
         "summary": _discovery_engine.summary(assets),
     }
@@ -176,6 +185,8 @@ async def run_redteam(req: RedTeamRequest):
     Run automated red team attack simulation.
     Requires ADMIN role due to active probing.
     """
+    tenant = get_tenant_context()
+
     # Parse categories
     categories = None
     if req.categories:
@@ -199,11 +210,12 @@ async def run_redteam(req: RedTeamRequest):
     results = engine.run_all()
     summary = engine.summary(results)
 
-    # Store results
+    # Store results (namespaced by tenant)
     run_id = str(uuid.uuid4())[:8]
     _redteam_results[run_id] = {
         "results": [r.to_dict() for r in results],
         "summary": summary,
+        "tenant_id": tenant.tenant_id,
     }
 
     # Telemetry for each attack
@@ -212,7 +224,7 @@ async def run_redteam(req: RedTeamRequest):
             event_type=EventType.REDTEAM,
             source="redteam_engine",
             severity=r.risk_level.value if r.risk_level.value != "none" else "info",
-            data=r.to_dict(),
+            data={**r.to_dict(), "tenant_id": tenant.tenant_id},
             risk_score=r.score,
         ))
 
@@ -226,10 +238,11 @@ async def run_redteam(req: RedTeamRequest):
             "attacks": len(results),
             "succeeded": summary["attacks_succeeded"],
             "resilience": summary["resilience_score"],
+            "tenant_id": tenant.tenant_id,
         },
     )
 
-    return {"run_id": run_id, "summary": summary}
+    return {"run_id": run_id, "summary": summary, "tenant_id": tenant.tenant_id}
 
 
 @ai_security_router.get("/redteam/{run_id}", dependencies=[Depends(require_role(Role.ANALYST))])
@@ -245,6 +258,7 @@ async def get_redteam_results(run_id: str):
 @ai_security_router.post("/guardrails", dependencies=[Depends(require_role(Role.ANALYST))])
 async def check_guardrails(req: GuardrailRequest):
     """Evaluate content against runtime guardrails."""
+    tenant = get_tenant_context()
     if req.direction == "input":
         verdict = _guardrails_engine.check_input(req.content)
     else:
@@ -255,11 +269,11 @@ async def check_guardrails(req: GuardrailRequest):
         event_type=EventType.GUARDRAIL,
         source="guardrails_engine",
         severity="high" if not verdict.allowed else "info",
-        data=verdict.to_dict(),
+        data={**verdict.to_dict(), "tenant_id": tenant.tenant_id},
         risk_score=verdict.risk_score,
     ))
 
-    return verdict.to_dict()
+    return {**verdict.to_dict(), "tenant_id": tenant.tenant_id}
 
 
 # ── Policy Endpoints ─────────────────────────────────────────────────
@@ -267,7 +281,9 @@ async def check_guardrails(req: GuardrailRequest):
 @ai_security_router.post("/policy/evaluate", dependencies=[Depends(require_role(Role.ANALYST))])
 async def evaluate_policy(req: PolicyEvalRequest):
     """Evaluate an AI event against governance policies."""
+    tenant = get_tenant_context()
     event = req.model_dump()
+    event["tenant_id"] = tenant.tenant_id  # inject tenant into policy context
     assessment = _policy_engine.evaluate(event)
 
     # Telemetry
@@ -275,13 +291,13 @@ async def evaluate_policy(req: PolicyEvalRequest):
         event_type=EventType.POLICY,
         source="policy_engine",
         severity=assessment.overall_severity.value,
-        data=assessment.to_dict(),
+        data={**assessment.to_dict(), "tenant_id": tenant.tenant_id},
         model=req.model,
         provider=req.provider,
         risk_score=assessment.overall_score,
     ))
 
-    return assessment.to_dict()
+    return {**assessment.to_dict(), "tenant_id": tenant.tenant_id}
 
 
 @ai_security_router.get("/policy/rules", dependencies=[Depends(require_role(Role.ANALYST))])

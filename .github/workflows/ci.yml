@@ -38,7 +38,7 @@ jobs:
           mods = [
             'config', 'auth',
             'modules.agents.orchestrator',
-            'modules.analytics.elastic',
+            'modules.analytics.clickhouse_indexer',
             'modules.compliance.stig',
             'modules.compliance.ssp_generator',
             'modules.scanners.base',
@@ -57,6 +57,8 @@ jobs:
             'modules.telemetry',
             'modules.connectors',
             'modules.ai_security_routes',
+            'modules.reports.compliance',
+            'modules.tenants.middleware',
           ]
           failed = []
           for m in mods:

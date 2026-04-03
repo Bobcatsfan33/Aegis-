@@ -4,9 +4,8 @@ version: "3.9"
 #
 #  Services:
 #    aegis        FastAPI app  →  http://localhost:8000
-#    opensearch   OpenSearch (Apache 2.0 search/analytics backend)
-#    dashboards   OpenSearch Dashboards  →  http://localhost:5601
-#    clickhouse   ClickHouse (v3.0 AI telemetry analytics)  →  http://localhost:8123
+#    clickhouse   ClickHouse (unified analytics: CSPM, AI telemetry,
+#                 cross-product)  →  http://localhost:8123
 #
 #  Quick start:
 #    1. cp .env.example .env  &&  vim .env   (add your OPENAI_API_KEY)
@@ -14,8 +13,7 @@ version: "3.9"
 #    3. docker compose logs -f aegis
 #    4. curl http://localhost:8000/
 #
-#  First-time dashboard setup (run once after services are healthy):
-#    docker compose exec aegis python -m modules.analytics.kibana_setup
+#  Dashboard: http://localhost:8000/dashboard  (built-in, ClickHouse-backed)
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -38,13 +36,10 @@ services:
 
     # Override specific values for the containerised environment
     environment:
-      # Point at the compose-internal OpenSearch service, not localhost
-      ELASTICSEARCH_URL: http://opensearch:9200
-      ELASTICSEARCH_ENABLED: "true"
-      DASHBOARD_URL: http://dashboards:5601
-      # v3.0: ClickHouse for AI telemetry
+      # v4.0: Unified ClickHouse analytics (CSPM + AI telemetry + cross-product)
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: "9000"
+      CLICKHOUSE_ANALYTICS_ENABLED: "true"
 
     # ── Capabilities ──────────────────────────────────────────────────────────
     # NET_ADMIN + SYS_PTRACE are required for the network remediation agent
@@ -66,8 +61,6 @@ services:
       - reports:/app/reports
 
     depends_on:
-      opensearch:
-        condition: service_healthy
       clickhouse:
         condition: service_healthy
 
@@ -97,7 +90,7 @@ services:
 
     ports:
       - "8123:8123"    # HTTP interface
-      - "9001:9000"    # Native TCP (host 9001 to avoid conflict with OpenSearch)
+      - "9000:9000"    # Native TCP
 
     volumes:
       - clickhouse-data:/var/lib/clickhouse
@@ -118,80 +111,9 @@ services:
         hard: 262144
 
 
-  # ── OpenSearch (Apache 2.0) ──────────────────────────────────────────────────
-  opensearch:
-    image: opensearchproject/opensearch:2.13.0
-    container_name: opensearch
-    restart: unless-stopped
-
-    environment:
-      - cluster.name=aegis-cluster
-      - node.name=opensearch-node1
-      - discovery.type=single-node
-      - bootstrap.memory_lock=true
-      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
-      # Disable security plugin for local dev — enable in production
-      - DISABLE_SECURITY_PLUGIN=true
-
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-      nofile:
-        soft: 65536
-        hard: 65536
-
-    ports:
-      - "9200:9200"
-      - "9600:9600"
-
-    volumes:
-      - opensearch-data:/usr/share/opensearch/data
-
-    networks:
-      - chainsage-net
-
-    healthcheck:
-      test: ["CMD-SHELL",
-             "curl -sf http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
-      interval: 20s
-      timeout: 10s
-      retries: 10
-      start_period: 60s
-
-
-  # ── OpenSearch Dashboards (Apache 2.0) ──────────────────────────────────────
-  dashboards:
-    image: opensearchproject/opensearch-dashboards:2.13.0
-    container_name: opensearch-dashboards
-    restart: unless-stopped
-
-    environment:
-      - OPENSEARCH_HOSTS=["http://opensearch:9200"]
-      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
-
-    ports:
-      - "5601:5601"
-
-    depends_on:
-      opensearch:
-        condition: service_healthy
-
-    networks:
-      - chainsage-net
-
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:5601/api/status | grep -q '\"state\":\"green\"'"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      start_period: 90s
-
 
 # ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
-  opensearch-data:
-    driver: local
   clickhouse-data:
     driver: local
   reports:

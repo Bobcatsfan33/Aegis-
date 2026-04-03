@@ -88,7 +88,7 @@ from config import (
     AZURE_SUBSCRIPTION_ID,
     DEV_MODE,
     DRY_RUN,
-    ELASTICSEARCH_ENABLED,
+    CLICKHOUSE_ANALYTICS_ENABLED,
     GCP_ENABLED,
     GCP_PROJECT_ID,
     IAC_ENABLED,
@@ -98,7 +98,7 @@ from config import (
     OIDC_ISSUER,
 )
 from modules.agents.orchestrator import AIOrchestrator
-from modules.analytics.elastic import ElasticIndexer
+from modules.analytics.clickhouse_indexer import ClickHouseIndexer
 from modules.compliance.stig import STIGChecker, STIGStatus
 from modules.reports.compliance import ComplianceReportGenerator
 from modules.scanners.base import Finding
@@ -175,7 +175,7 @@ scan_results: dict[str, Any] = {}
 
 # ── Analytics indexer ─────────────────────────────────────────────────────────
 
-_indexer = ElasticIndexer()
+_indexer = ClickHouseIndexer()
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────
@@ -219,14 +219,14 @@ async def startup_checks():
             "Set MTLS_MODE=proxy|native for IL4/IL5 inter-service transport (SC-8)."
         )
 
-    if ELASTICSEARCH_ENABLED:
+    if CLICKHOUSE_ANALYTICS_ENABLED:
         if _indexer.is_available():
             _indexer.ensure_indices()
-            logger.info("Elasticsearch connected — findings will be indexed.")
+            logger.info("ClickHouse analytics connected — findings will be indexed.")
         else:
             logger.warning(
-                "ELASTICSEARCH_ENABLED=true but connection failed. "
-                "Check ELASTICSEARCH_URL and credentials."
+                "CLICKHOUSE_ANALYTICS_ENABLED=true but connection failed. "
+                "Check CLICKHOUSE_HOST and CLICKHOUSE_PORT."
             )
 
     # v2.8: Encryption at rest configuration check (SC-28)
@@ -415,8 +415,8 @@ def _run_scan(scan_id: str, initiated_by: str):
             },
         )
 
-        # ── Ship to Elasticsearch / Kibana ──────────────────────────────────
-        if ELASTICSEARCH_ENABLED and _indexer.is_available():
+        # ── Ship to ClickHouse ─────────────────────────────────────────────
+        if CLICKHOUSE_ANALYTICS_ENABLED and _indexer.is_available():
             indexed = _indexer.bulk_index_scan_results(
                 scan_id=scan_id,
                 remediation_results=remediation_results,
@@ -427,7 +427,7 @@ def _run_scan(scan_id: str, initiated_by: str):
                 duration_seconds=duration,
             )
             logger.info(
-                f"Elasticsearch: indexed {indexed['findings']} findings, "
+                f"ClickHouse: indexed {indexed['findings']} findings, "
                 f"{indexed['remediations']} remediations, "
                 f"{indexed['scans']} scan summary."
             )

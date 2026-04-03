@@ -128,6 +128,100 @@ TTL timestamp + INTERVAL 365 DAY
 SETTINGS index_granularity = 8192;
 """
 
+# ── Materialized Views for Real-Time Dashboards ────────────────────────
+
+CLICKHOUSE_MATERIALIZED_VIEWS = [
+    # Hourly event counts by type — powers the main timeline chart
+    """
+    CREATE TABLE IF NOT EXISTS ai_events_hourly (
+        hour          DateTime,
+        event_type    LowCardinality(String),
+        severity      LowCardinality(String),
+        cnt           AggregateFunction(count, UInt64),
+        avg_latency   AggregateFunction(avg, Float64),
+        sum_cost      AggregateFunction(sum, Float64),
+        sum_tokens    AggregateFunction(sum, UInt64)
+    )
+    ENGINE = AggregatingMergeTree()
+    PARTITION BY toYYYYMM(hour)
+    ORDER BY (hour, event_type, severity)
+    TTL hour + INTERVAL 90 DAY;
+    """,
+    """
+    CREATE MATERIALIZED VIEW IF NOT EXISTS ai_events_hourly_mv
+    TO ai_events_hourly AS
+    SELECT
+        toStartOfHour(timestamp)      AS hour,
+        event_type,
+        severity,
+        countState()                  AS cnt,
+        avgState(latency_ms)          AS avg_latency,
+        sumState(cost_usd)            AS sum_cost,
+        sumState(input_tokens + output_tokens) AS sum_tokens
+    FROM ai_events
+    GROUP BY hour, event_type, severity;
+    """,
+    # Provider cost rollup — powers cost optimization dashboard
+    """
+    CREATE TABLE IF NOT EXISTS ai_cost_by_provider (
+        day           Date,
+        provider      LowCardinality(String),
+        model         LowCardinality(String),
+        total_cost    AggregateFunction(sum, Float64),
+        total_tokens  AggregateFunction(sum, UInt64),
+        request_count AggregateFunction(count, UInt64),
+        p95_latency   AggregateFunction(quantile(0.95), Float64)
+    )
+    ENGINE = AggregatingMergeTree()
+    PARTITION BY toYYYYMM(day)
+    ORDER BY (day, provider, model)
+    TTL day + INTERVAL 365 DAY;
+    """,
+    """
+    CREATE MATERIALIZED VIEW IF NOT EXISTS ai_cost_by_provider_mv
+    TO ai_cost_by_provider AS
+    SELECT
+        toDate(timestamp)                   AS day,
+        provider,
+        model,
+        sumState(cost_usd)                  AS total_cost,
+        sumState(input_tokens + output_tokens) AS total_tokens,
+        countState()                        AS request_count,
+        quantileState(0.95)(latency_ms)     AS p95_latency
+    FROM ai_events
+    WHERE event_type = 'ai_request'
+    GROUP BY day, provider, model;
+    """,
+    # Risk score distribution — powers risk heatmap
+    """
+    CREATE TABLE IF NOT EXISTS ai_risk_hourly (
+        hour          DateTime,
+        severity      LowCardinality(String),
+        source        LowCardinality(String),
+        cnt           AggregateFunction(count, UInt64),
+        max_risk      AggregateFunction(max, Float64),
+        avg_risk      AggregateFunction(avg, Float64)
+    )
+    ENGINE = AggregatingMergeTree()
+    PARTITION BY toYYYYMM(hour)
+    ORDER BY (hour, severity, source)
+    TTL hour + INTERVAL 90 DAY;
+    """,
+    """
+    CREATE MATERIALIZED VIEW IF NOT EXISTS ai_risk_hourly_mv
+    TO ai_risk_hourly AS
+    SELECT
+        toStartOfHour(timestamp) AS hour,
+        severity,
+        source,
+        countState()             AS cnt,
+        maxState(risk_score)     AS max_risk,
+        avgState(risk_score)     AS avg_risk
+    FROM ai_events
+    GROUP BY hour, severity, source;
+    """,
+]
+
 # Pre-built analytical queries
 ANALYTICS_QUERIES = {
     "events_per_hour": """
@@ -189,6 +283,37 @@ ANALYTICS_QUERIES = {
         WHERE event_type = 'policy_event'
           AND timestamp >= now() - INTERVAL 7 DAY
         GROUP BY compliant
+    """,
+    "hourly_events_materialized": """
+        SELECT hour, event_type, severity,
+               countMerge(cnt) AS count,
+               avgMerge(avg_latency) AS avg_latency_ms,
+               sumMerge(sum_cost) AS total_cost
+        FROM ai_events_hourly
+        WHERE hour >= now() - INTERVAL 24 HOUR
+        GROUP BY hour, event_type, severity
+        ORDER BY hour, event_type
+    """,
+    "daily_cost_by_provider": """
+        SELECT day, provider, model,
+               sumMerge(total_cost) AS cost,
+               sumMerge(total_tokens) AS tokens,
+               countMerge(request_count) AS requests,
+               quantileMerge(0.95)(p95_latency) AS p95_latency_ms
+        FROM ai_cost_by_provider
+        WHERE day >= today() - 30
+        GROUP BY day, provider, model
+        ORDER BY day, cost DESC
+    """,
+    "risk_heatmap": """
+        SELECT hour, severity, source,
+               countMerge(cnt) AS count,
+               maxMerge(max_risk) AS max_risk,
+               avgMerge(avg_risk) AS avg_risk
+        FROM ai_risk_hourly
+        WHERE hour >= now() - INTERVAL 24 HOUR
+        GROUP BY hour, severity, source
+        ORDER BY hour, severity
     """,
 }
 
@@ -331,6 +456,12 @@ class TelemetryEngine:
             )
             # Create table
             self._client.execute(CLICKHOUSE_CREATE_TABLE)
+            # Create materialized views for real-time dashboards
+            for mv_sql in CLICKHOUSE_MATERIALIZED_VIEWS:
+                try:
+                    self._client.execute(mv_sql)
+                except Exception as mv_err:
+                    logger.warning("Materialized view creation: %s", mv_err)
             self._ch_available = True
             logger.info("ClickHouse connected: %s:%d/%s", self.ch_host, self.ch_port, self.database)
         except ImportError:
