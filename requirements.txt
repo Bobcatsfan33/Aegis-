@@ -41,7 +41,7 @@ s3transfer==0.10.4               # boto3 transitive dep — pinned to avoid drif
 # google-auth==2.37.0
 
 # ── AI / LLM ──────────────────────────────────────────────────────────────────
-openai==1.57.4                   # works with Ollama, vLLM, Groq, LocalAI, etc.
+openai==2.30.0                   # works with Ollama, vLLM, Groq, LocalAI, etc.
 anthropic==0.45.0                # v3.0: Anthropic Claude connector
 
 # ── AI Telemetry (v3.0) ──────────────────────────────────────────────────────
