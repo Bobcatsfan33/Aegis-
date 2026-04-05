@@ -29,7 +29,7 @@ redis==7.0.1
 # ── Cloud SDKs ────────────────────────────────────────────────────────────────
 boto3==1.35.95
 botocore==1.35.95
-s3transfer==0.10.4               # boto3 transitive dep — pinned to avoid drift
+s3transfer==0.16.0               # boto3 transitive dep — pinned to avoid drift
 
 # Azure (uncomment when AZURE_ENABLED=true)
 # azure-identity==1.19.0
