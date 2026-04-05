@@ -20,7 +20,7 @@ certifi==2024.12.14              # CA bundle pinned for supply-chain trust
 
 # ── Data validation / config ──────────────────────────────────────────────────
 pydantic==2.10.3
-pydantic-settings==2.6.1
+pydantic-settings==2.13.1
 python-dotenv==1.0.1
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
