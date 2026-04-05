@@ -66,7 +66,7 @@ watchdog==6.0.0                  # filesystem event watcher for real-time downlo
 # kubernetes==31.0.0             # uncomment when K8S_ENABLED=true
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
-anyio==4.7.0                     # FastAPI async runtime dep
+anyio==4.12.1                     # FastAPI async runtime dep
 click==8.1.8                     # uvicorn dep
 typing_extensions==4.12.2        # backport — pinned to avoid version conflicts
 
